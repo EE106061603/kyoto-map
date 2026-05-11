@@ -1652,9 +1652,9 @@ function buildSelectedInfoHtml(store) {
     </div>` : "";
 
   return `
-    <h3>${escapeHtml(store.name)}</h3>
-    ${store.nameJa && store.nameJa !== store.name
-      ? `<div class="lang-ja">${escapeHtml(store.nameJa)}</div>` : ""}
+    <h3>${escapeHtml(store.nameJa || store.name)}</h3>
+    ${store.name && store.name !== store.nameJa
+      ? `<div class="lang-ja">${escapeHtml(store.name)}</div>` : ""}
     ${ratingLine}
     ${tagLine}
     <div class="gm-actions">${actGmaps}${actWant}${actWeb}${actSkip}</div>
