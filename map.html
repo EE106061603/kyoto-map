@@ -1863,23 +1863,55 @@ function updateMyListCount() {
 // ============================================================
 // 篩選 UI
 // ============================================================
-// 類別在當前區域的店家數（全部 → 總計，其他 → 該區計數）
-function categoryCount(c) {
-  if (state.activeRegion === "全部") {
-    return state.rows.filter(r => r.cat === c).length;
+// 神社 / 寺廟 / 觀光景點在 UI 上合併成單一「景點」群組（內部仍是三個 cat）
+const ATTRACTION_CATS = ["神社", "寺廟", "觀光景點"];
+const ATTRACTION_LABEL = "景點";
+const ATTRACTION_ICON = "🗾";
+
+// 把 internal cats 攤平成 UI groups: [{key, label, icon, members:[cat,...]}]
+function buildCategoryGroups() {
+  const internal = [...new Set(state.rows.map(r => r.cat))];
+  const groups = [];
+  for (const c of internal) {
+    if (ATTRACTION_CATS.includes(c)) continue;
+    groups.push({ key: `cat-${c}`, label: c, icon: CAT_ICONS[c] || "•", members: [c] });
   }
-  return state.rows.filter(r => r.cat === c && r.region === state.activeRegion).length;
+  const attrMembers = ATTRACTION_CATS.filter(c => internal.includes(c));
+  if (attrMembers.length) {
+    groups.push({
+      key: "cat-group-attractions",
+      label: ATTRACTION_LABEL,
+      icon: ATTRACTION_ICON,
+      members: attrMembers,
+    });
+  }
+  return groups;
+}
+
+// 群組在當前區域的店家數（全部 → 總計，其他 → 該區計數）
+function groupCount(g) {
+  const region = state.activeRegion;
+  const all = region === "全部";
+  let n = 0;
+  for (const r of state.rows) {
+    if (!g.members.includes(r.cat)) continue;
+    if (!all && r.region !== region) continue;
+    n++;
+  }
+  return n;
 }
 
 // 區域切換後只更新 label 的數字，不重 build checkbox（保留勾選狀態）
 function refreshCategoryCounts() {
+  const groups = buildCategoryGroups();
+  const byKey = new Map(groups.map(g => [g.key, g]));
   document.querySelectorAll("#cat-list .row").forEach(row => {
     const input = row.querySelector("input[type=checkbox]");
     const label = row.querySelector("label");
     if (!input || !label) return;
-    const c = input.id.slice(4);
-    const ico = CAT_ICONS[c] || "•";
-    label.innerHTML = `<span class="cat-ico">${ico}</span>${escapeHtml(c)} (${categoryCount(c)})`;
+    const g = byKey.get(input.id);
+    if (!g) return;
+    label.innerHTML = `<span class="cat-ico">${g.icon}</span>${escapeHtml(g.label)} (${groupCount(g)})`;
   });
 }
 
@@ -1893,20 +1925,20 @@ function setupFilterUI() {
   catList.innerHTML = "";
   const legend = document.getElementById("legend");
   if (legend) legend.innerHTML = "";
-  cats.forEach(c => {
-    const id = `cat-${c}`;
+  const groups = buildCategoryGroups();
+  groups.forEach(g => {
     const div = document.createElement("div");
     div.className = "row";
-    const ico = CAT_ICONS[c] || "•";
-    const checked = state.filters.categories.has(c) ? "checked" : "";
+    // 群組 checked = 任一 member 勾起來（不要求全部勾，避免區域切換造成假象未勾）
+    const checked = g.members.some(c => state.filters.categories.has(c)) ? "checked" : "";
     div.innerHTML = `
-      <input type="checkbox" id="${id}" ${checked}>
-      <label for="${id}"><span class="cat-ico">${ico}</span>${escapeHtml(c)} (${categoryCount(c)})</label>
+      <input type="checkbox" id="${g.key}" ${checked}>
+      <label for="${g.key}"><span class="cat-ico">${g.icon}</span>${escapeHtml(g.label)} (${groupCount(g)})</label>
     `;
     catList.appendChild(div);
     div.querySelector("input").addEventListener("change", e => {
-      if (e.target.checked) state.filters.categories.add(c);
-      else state.filters.categories.delete(c);
+      if (e.target.checked) g.members.forEach(c => state.filters.categories.add(c));
+      else g.members.forEach(c => state.filters.categories.delete(c));
       persist();
       applyFilters();
     });
@@ -1914,10 +1946,11 @@ function setupFilterUI() {
 
   function setAllCats(checked) {
     cats.forEach(c => {
-      const cb = document.getElementById(`cat-${c}`);
-      if (cb) cb.checked = checked;
       if (checked) state.filters.categories.add(c);
       else state.filters.categories.delete(c);
+    });
+    document.querySelectorAll("#cat-list input[type=checkbox]").forEach(cb => {
+      cb.checked = checked;
     });
     // 也連動 OSM POI 圖層三個 checkbox（景點 / 神社 / 寺廟 overlay）
     for (const id of ["f-poi-attr", "f-poi-shrine", "f-poi-temple"]) {
