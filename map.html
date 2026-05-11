@@ -528,20 +528,6 @@
   }
   .cat-marker:hover { transform: scale(1.15); }
 
-  /* POI marker (景點 / 神社 / 寺廟) */
-  .poi-marker {
-    font-size: 16px;
-    line-height: 16px;
-    text-align: center;
-    text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
-    pointer-events: auto;
-    user-select: none;
-    width: 16px; height: 16px;
-  }
-  .poi-shrine { color: #B0413E; }
-  .poi-temple { color: #8E6E3D; }
-  .poi-attr { color: #1E5BB8; }
-
   /* Kyoto Station marker */
   .kyoto-pin {
     background: var(--kyoto); color: #fff; border: 2px solid #fff;
@@ -639,20 +625,6 @@
       </div>
     </div>
     <div id="cat-list"></div>
-
-    <div class="layer-subhead"><span>📍 景點</span></div>
-    <div class="row">
-      <input type="checkbox" id="f-poi-attr" checked>
-      <label for="f-poi-attr">★ 觀光景點</label>
-    </div>
-    <div class="row">
-      <input type="checkbox" id="f-poi-shrine" checked>
-      <label for="f-poi-shrine">⛩ 神社</label>
-    </div>
-    <div class="row">
-      <input type="checkbox" id="f-poi-temple" checked>
-      <label for="f-poi-temple">卍 寺廟</label>
-    </div>
 
     <div class="layer-subhead"><span>🚇 交通與行政</span></div>
     <div class="row">
@@ -1086,10 +1058,8 @@ function getStoreById(id) {
 // ============================================================
 let map;
 let markersLayer;
-let attrLayer, shrineLayer, templeLayer;
 let transitLayer;
 let prefectureLayer;
-const POI_BBOX = [34.92, 135.62, 35.07, 135.88]; // 京都市中心區域
 
 function initMap() {
   map = L.map("map", { zoomControl: true }).setView([KYOTO.lat, KYOTO.lng], 13);
@@ -1100,12 +1070,9 @@ function initMap() {
     attribution: '© <a href="https://openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/attributions">CARTO</a>',
   }).addTo(map);
 
-  // 順序：府界（最底）→ POI → 交通 → 餐廳 markers
+  // 順序：府界（最底）→ 交通 → 餐廳 markers
   // prefectureLayer 預設不 addTo map（使用者勾 checkbox 才顯示，避免一打開地圖就被線蓋住）
   prefectureLayer = L.layerGroup();
-  attrLayer = L.layerGroup().addTo(map);
-  shrineLayer = L.layerGroup().addTo(map);
-  templeLayer = L.layerGroup().addTo(map);
   transitLayer = L.layerGroup().addTo(map);
   markersLayer = L.layerGroup().addTo(map);
 
@@ -1323,75 +1290,6 @@ function renderPrefectures(prefs) {
     }).addTo(prefectureLayer);
   }
   console.log(`府界已載入 ${prefs.length} 府（只顯示主外框）`);
-}
-
-// ============================================================
-// POI 層（觀光景點 / 神社 / 寺廟，從 Overpass API 抓）
-// ============================================================
-async function loadPOIs() {
-  const CACHE_KEY = "kyoto-poi-v1";
-  const TTL_MS = 7 * 24 * 3600 * 1000;
-  let pois = null;
-  try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (cached) {
-      const data = JSON.parse(cached);
-      if (data.ts && Date.now() - data.ts < TTL_MS) pois = data.pois;
-    }
-  } catch (e) { /* ignore */ }
-
-  if (!pois) {
-    const bbox = POI_BBOX.join(",");
-    const query = `[out:json][timeout:25];
-(
-  node["tourism"="attraction"](${bbox});
-  node["historic"~"shrine|temple|monastery"](${bbox});
-  node["amenity"="place_of_worship"]["religion"~"shinto|buddhist"](${bbox});
-);
-out body;`;
-    try {
-      const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      pois = (data.elements || []).map(e => ({
-        lat: e.lat,
-        lng: e.lon,
-        name: (e.tags && (e.tags.name || e.tags["name:en"])) || "",
-        type: classifyPOI(e.tags || {}),
-      }));
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), pois }));
-    } catch (e) {
-      console.warn("POI 抓取失敗：", e);
-      return;
-    }
-  }
-  renderPOIs(pois);
-}
-
-function classifyPOI(tags) {
-  if (tags.religion === "shinto" || tags.historic === "shrine") return "shrine";
-  if (tags.religion === "buddhist" || tags.historic === "temple" || tags.historic === "monastery") return "temple";
-  return "attr";
-}
-
-function renderPOIs(pois) {
-  const symbols = { shrine: "⛩", temple: "卍", attr: "★" };
-  for (const p of pois) {
-    const sym = symbols[p.type] || "★";
-    const icon = L.divIcon({
-      className: "",
-      html: `<div class="poi-marker poi-${p.type}">${sym}</div>`,
-      iconSize: [16, 16], iconAnchor: [8, 8],
-    });
-    const m = L.marker([p.lat, p.lng], { icon, interactive: !!p.name });
-    if (p.name) m.bindTooltip(p.name, { direction: "top", offset: [0, -4] });
-    const target = p.type === "shrine" ? shrineLayer
-                 : p.type === "temple" ? templeLayer
-                 : attrLayer;
-    target.addLayer(m);
-  }
-  console.log(`POI 已載入 ${pois.length} 個`);
 }
 
 // ============================================================
@@ -1938,14 +1836,6 @@ function setupFilterUI() {
     document.querySelectorAll("#cat-list input[type=checkbox]").forEach(cb => {
       cb.checked = checked;
     });
-    // 也連動 OSM POI 圖層三個 checkbox（景點 / 神社 / 寺廟 overlay）
-    for (const id of ["f-poi-attr", "f-poi-shrine", "f-poi-temple"]) {
-      const cb = document.getElementById(id);
-      if (cb && cb.checked !== checked) {
-        cb.checked = checked;
-        cb.dispatchEvent(new Event("change"));
-      }
-    }
     persist();
     applyFilters();
   }
@@ -1962,18 +1852,6 @@ function setupFilterUI() {
     applyFilters();
   });
 
-  const poiToggles = [
-    ["f-poi-attr", () => attrLayer],
-    ["f-poi-shrine", () => shrineLayer],
-    ["f-poi-temple", () => templeLayer],
-  ];
-  for (const [id, getLayer] of poiToggles) {
-    document.getElementById(id).addEventListener("change", e => {
-      const layer = getLayer();
-      if (e.target.checked) map.addLayer(layer);
-      else map.removeLayer(layer);
-    });
-  }
   document.getElementById("f-transit").addEventListener("change", e => {
     if (e.target.checked) map.addLayer(transitLayer);
     else map.removeLayer(transitLayer);
@@ -2473,7 +2351,6 @@ async function main() {
   renderWantList();
   applyFilters();
   applyHotelVisibility();
-  loadPOIs();          // 非同步抓 Overpass，不擋主流程
   loadPrefectures();   // 非同步抓府界，不擋主流程
 
   // 初始視野
