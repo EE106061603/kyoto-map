@@ -1,0 +1,2454 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>京都美食地圖 ・ 2025/8/7-8/15</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<!-- 內嵌 CSV 資料（由 collect.py 產生）。讓本檔可直接雙擊 file:// 開啟。
+     若不存在則退而 fetch all_restaurants.csv。 -->
+<script src="data.js" onerror="window.__CSV_LOAD_FAILED=true"></script>
+<!-- 京都府 / 大阪府 admin polygon（由 generate_prefectures.py 產生）。
+     避免 file:// 雙擊開啟時 Overpass cross-origin fetch 被 CORS 擋。 -->
+<script src="prefectures.js" onerror="window.__PREF_LOAD_FAILED=true"></script>
+<!-- 食べログ 百名店得獎徽章資料（由 match_hyakumeiten.py 產生）。
+     key 為 "lat,lng"（5 位小數），value 為 [{label, slug, year}, ...]。 -->
+<script src="hyakumeiten.js" onerror="window.__HYAKU_LOAD_FAILED=true"></script>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e2e5eb;
+    --text: #1f2937;
+    --text-soft: #6b7280;
+    --accent: #2962FF;
+    --want: #F1C40F;
+    --kyoto: #2962FF;
+    --shadow: 0 2px 6px rgba(0,0,0,.08);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC",
+                 "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    font-size: 16px;
+  }
+  /* ---------- Layout ---------- */
+  #app {
+    display: grid;
+    grid-template-columns: 280px 1fr 540px;
+    grid-template-rows: 50px 1fr;
+    grid-template-areas:
+      "header header header"
+      "filter map planner";
+    height: 100vh;
+  }
+  header#topbar {
+    grid-area: header;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+    display: flex; align-items: center; gap: 12px;
+    box-shadow: var(--shadow);
+    z-index: 1000;
+  }
+  /* Region tabs */
+  .region-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .region-tabs button {
+    padding: 4px 10px; border: 1px solid var(--border); background: #fff;
+    border-radius: 16px; cursor: pointer; font-size: 16px;
+    color: var(--text); white-space: nowrap;
+  }
+  .region-tabs button.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+  }
+  .region-tabs .badge {
+    background: rgba(0,0,0,.08); border-radius: 9px; padding: 0 5px;
+    font-size: 16px; margin-left: 4px;
+  }
+  .region-tabs button.active .badge {
+    background: rgba(255,255,255,.25);
+  }
+  header h1 {
+    font-size: 24px; margin: 0; font-weight: 600;
+  }
+  header .info {
+    margin-left: auto;
+    display: flex; gap: 16px;
+    font-size: 16px; color: var(--text-soft);
+  }
+  header .info b { color: var(--text); }
+  header button.toggle {
+    display: none;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; font-size: 16px;
+  }
+
+  aside#filter, aside#planner {
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 14px;
+  }
+  aside#filter { grid-area: filter; border-right: 1px solid var(--border); }
+  aside#planner { grid-area: planner; border-left: 1px solid var(--border); }
+  main#map { grid-area: map; position: relative; }
+  /* 地圖右上：顯示模式選單 */
+  .map-filter {
+    position: absolute;
+    top: 12px; right: 12px;
+    z-index: 500;
+    background: #fff;
+    border: 1px solid #dadce0;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 16px;
+    color: #202124;
+    box-shadow: 0 1px 3px rgba(60,64,67,.18);
+    display: flex; flex-direction: column; gap: 4px;
+    min-width: 320px;
+  }
+  .map-filter-row {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .map-filter-row .seg {
+    flex: 1;
+  }
+  /* 地圖正上方中央：搜尋框 */
+  .map-search {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 500;
+    width: 280px;
+    background: #fff;
+    border: 1px solid #dadce0;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(60,64,67,.18);
+  }
+  .map-search input {
+    width: 100%; border: 0; outline: 0;
+    padding: 7px 12px; font-size: 16px;
+    border-radius: 6px; background: transparent;
+    color: #202124;
+  }
+  .search-results {
+    display: none;
+    max-height: 320px;
+    overflow-y: auto;
+    border-top: 1px solid #ebeef1;
+  }
+  .search-results.active { display: block; }
+  .search-results .item {
+    padding: 6px 12px;
+    cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid #f6f7f9;
+  }
+  .search-results .item:last-child { border-bottom: 0; }
+  .search-results .item:hover { background: #f1f3f4; }
+  .search-results .item .ico { font-size: 16px; }
+  .search-results .item .name {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: #202124;
+  }
+  .search-results .item .meta {
+    color: #5f6368; font-size: 16px; font-variant-numeric: tabular-nums;
+  }
+  .search-results .empty {
+    padding: 10px 12px; color: #5f6368;
+    font-size: 16px; text-align: center;
+  }
+  .map-filter .label { color: #5f6368; }
+  .map-filter .sep { color: #dadce0; }
+  .map-filter select {
+    border: 0; outline: 0; padding: 2px 4px;
+    font-size: 16px; color: #1a73e8;
+    background: transparent; cursor: pointer;
+    font-weight: 500;
+    max-width: 150px;
+  }
+
+  h2 { font-size: 20px; color: var(--text-soft); margin: 14px 0 6px; font-weight: 600;
+       text-transform: uppercase; letter-spacing: .04em; }
+  h2:first-child { margin-top: 0; }
+
+  /* Filter controls */
+  .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .row label { flex: 1; cursor: pointer; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 4px; }
+  .cat-ico { display: inline-block; width: 18px; text-align: center; margin-right: 2px; font-size: 16px; }
+  input[type="range"] { width: 100%; }
+  input[type="number"] {
+    width: 80px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px;
+    font-size: 16px;
+  }
+  .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+  .slider-val { font-variant-numeric: tabular-nums; color: var(--text-soft); min-width: 36px; text-align: right; }
+  /* 篩選行：label + 控件 + 數值 並排一列 */
+  .filter-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px; align-items: center;
+    margin: 8px 0;
+  }
+  .filter-row .filter-label {
+    color: var(--text-soft); font-weight: 600; font-size: 16px;
+    white-space: nowrap;
+  }
+  .filter-row .filter-val {
+    font-variant-numeric: tabular-nums;
+    color: var(--text); font-weight: 600;
+    min-width: 44px; text-align: right;
+  }
+  .filter-row input[type="number"] {
+    width: 100%; min-width: 0;
+  }
+  .seg {
+    display: flex; gap: 4px; flex-wrap: wrap;
+  }
+  .seg button {
+    flex: 1; padding: 5px 8px; border: 1px solid var(--border); background: #fff;
+    border-radius: 4px; cursor: pointer; font-size: 16px;
+  }
+  .seg button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .cat-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .cat-head h2 { margin: 14px 0 6px; }
+  .layer-subhead {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 10px 0 4px;
+    font-size: 16px; color: var(--text-soft);
+    font-weight: 600; letter-spacing: .04em;
+  }
+  .layer-subhead:first-of-type { margin-top: 4px; }
+  .cat-actions { display: flex; gap: 4px; }
+  .cat-actions button {
+    padding: 3px 8px; border: 1px solid var(--border); background: #fff;
+    border-radius: 4px; cursor: pointer; font-size: 16px; color: var(--text-soft);
+  }
+  .cat-actions button:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary {
+    background: var(--accent); color: #fff; border: 0; padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 16px;
+  }
+  button.ghost {
+    background: transparent; color: var(--text-soft); border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 16px;
+  }
+
+  /* Planner */
+  .day-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .day-tabs button {
+    padding: 6px 0; border: 1px solid var(--border); background: #fff; border-radius: 4px;
+    cursor: pointer; font-size: 16px; position: relative;
+    border-left-width: 4px;
+  }
+  .day-tabs button.active { background: #eef2ff; border-color: var(--accent); }
+  .day-tabs .badge {
+    background: rgba(0,0,0,.08); border-radius: 9px; padding: 1px 6px;
+    font-size: 16px; margin-left: 4px;
+  }
+  .day-summary {
+    margin: 8px 0 4px; font-size: 16px; color: var(--text-soft);
+  }
+  .drop-zone {
+    min-height: 120px;
+    border: 2px dashed var(--border); border-radius: 8px;
+    padding: 6px;
+    background: #fafbfd;
+    transition: background .15s, border-color .15s;
+  }
+  .drop-zone.over { border-color: var(--accent); background: #eef4ff; }
+  .store-card {
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; margin: 4px 0; font-size: 16px; cursor: grab;
+    display: flex; align-items: center; gap: 6px;
+    border-left: 4px solid #888;
+  }
+  .store-card .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .store-card .meta { color: var(--text-soft); font-size: 16px; }
+  .store-card .x { cursor: pointer; color: var(--text-soft); padding: 0 4px; }
+  .store-card .x:hover { color: #C0392B; }
+  .store-card.ghost-drag { opacity: .4; }
+  .store-card.hotel-card {
+    background: #f3e5f5; cursor: pointer;
+  }
+  .store-card.hotel-card .name { font-weight: 500; }
+  .store-card.hotel-card .meta {
+    background: #8E24AA; color: #fff;
+    padding: 1px 6px; border-radius: 3px; font-size: 16px;
+  }
+  .store-card.hotel-card .meta:empty { display: none; }
+
+  /* Want list */
+  #want-list { margin-top: 6px; max-height: 180px; overflow-y: auto; padding: 0; }
+
+  /* Popup + sidebar selected-info（共用樣式） */
+  .leaflet-popup-content { margin: 8px 10px; min-width: 230px; }
+  .leaflet-popup-content h3,
+  #selected-info h3 { margin: 0 0 4px; font-size: 16px; }
+  .leaflet-popup-content .lang-ja,
+  #selected-info .lang-ja { color: var(--text-soft); font-size: 16px; margin-bottom: 6px; }
+  /* sidebar 選中店家：仿 Google Maps 樣式 */
+  #selected-info {
+    background: #fff;
+    border: 1px solid #dadce0;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    color: #202124;
+    box-shadow: 0 1px 2px rgba(60,64,67,.08);
+  }
+  #selected-info.empty {
+    text-align: center; color: #5f6368; font-size: 16px;
+    padding: 24px 14px; background: transparent;
+    border-style: dashed; box-shadow: none;
+  }
+  #selected-info h3 {
+    margin: 0; padding: 14px 16px 0;
+    font-size: 24px; font-weight: 500; line-height: 1.3;
+    color: #202124;
+  }
+  #selected-info .lang-ja {
+    margin: 2px 0 0; padding: 0 16px;
+    color: #5f6368; font-size: 16px;
+  }
+  #selected-info .gm-rating {
+    padding: 8px 16px 0;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 20px; flex-wrap: wrap;
+  }
+  #selected-info .gm-rating .num { color: #202124; font-weight: 500; }
+  #selected-info .gm-rating .stars { color: #fbbc04; letter-spacing: 1px; font-size: 20px; }
+  #selected-info .gm-rating .reviews { color: #1a73e8; font-size: 16px; }
+  #selected-info .gm-tags {
+    padding: 2px 16px 12px;
+    color: #5f6368; font-size: 16px;
+  }
+  #selected-info .gm-actions {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 2px; padding: 0 8px 12px;
+  }
+  #selected-info .gm-action {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 6px 2px;
+    border-radius: 6px; border: 0; background: transparent;
+    cursor: pointer; text-decoration: none;
+    font-size: 16px; color: #1a73e8;
+    transition: background .12s;
+  }
+  #selected-info .gm-action:hover { background: #f1f3f4; }
+  #selected-info .gm-action .icon {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: #e8f0fe;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    transition: background .12s, color .12s;
+  }
+  #selected-info .gm-action.want.active .icon { background: #fef7e0; color: #b06000; }
+  #selected-info .gm-action.skip.active .icon { background: #fce8e6; color: #c5221f; }
+
+  #selected-info .gm-row {
+    display: grid; grid-template-columns: 32px 1fr;
+    align-items: start; gap: 6px;
+    padding: 12px 16px;
+    border-top: 1px solid #ebeef1;
+    font-size: 20px;
+    line-height: 1.45;
+  }
+  #selected-info .gm-row .gm-icon {
+    color: #5f6368; font-size: 24px; text-align: center; line-height: 1.2;
+    padding-top: 1px;
+  }
+  #selected-info .gm-row .gm-content { color: #202124; word-break: break-word; }
+  #selected-info .gm-row a.gm-content,
+  #selected-info .gm-row .gm-content a { color: #1a73e8; text-decoration: none; }
+  #selected-info .gm-row a.gm-content:hover,
+  #selected-info .gm-row .gm-content a:hover { text-decoration: underline; }
+
+  /* 食べログ 百名店徽章 row */
+  #selected-info .gm-row.hyaku-row {
+    background: linear-gradient(90deg, #fff8e1 0%, #fffbf0 100%);
+  }
+  #selected-info .gm-row.hyaku-row .gm-icon { color: #b06000; }
+  #selected-info .hyaku-title {
+    font-weight: 600; color: #b06000; margin-bottom: 4px;
+  }
+  #selected-info .hyaku-item { font-size: 18px; line-height: 1.6; }
+  #selected-info .hyaku-item b { color: #202124; }
+  #selected-info .hyaku-years { color: #5f6368; font-size: 16px; margin-left: 6px; }
+
+  #selected-info .hours-status {
+    cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px;
+  }
+  #selected-info .hours-status .badge { font-weight: 500; }
+  #selected-info .hours-status .badge.open { color: #1e8e3e; }
+  #selected-info .hours-status .badge.closed { color: #d93025; }
+  #selected-info .hours-status .sep { color: #5f6368; }
+  #selected-info .hours-status .chevron {
+    color: #5f6368; font-size: 16px; margin-left: auto;
+    transition: transform .15s;
+  }
+  #selected-info .hours-status.expanded .chevron { transform: rotate(180deg); }
+  #selected-info .hours-list {
+    display: none;
+    margin-top: 8px;
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    flex-direction: column; gap: 3px;
+  }
+  #selected-info .hours-list.expanded { display: flex; }
+  #selected-info .hr-row {
+    display: grid; grid-template-columns: 56px 1fr; gap: 8px;
+    align-items: start;
+  }
+  #selected-info .hr-row .day { color: #5f6368; }
+  #selected-info .hr-row .times { display: flex; flex-direction: column; gap: 1px; }
+  #selected-info .hr-row .times.closed { color: #d93025; }
+  #selected-info .hr-row.today { font-weight: 500; color: #202124; }
+  #selected-info .hr-row.today .day { color: #202124; }
+
+  #selected-info .day-pick {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    margin-top: 6px;
+  }
+  #selected-info .day-pick button {
+    padding: 4px 8px; border: 1px solid #dadce0;
+    border-radius: 4px; background: #fff; cursor: pointer;
+    font-size: 16px; color: #1a73e8;
+    font-variant-numeric: tabular-nums;
+  }
+  #selected-info .day-pick button.assigned {
+    background: #1a73e8; color: #fff; border-color: #1a73e8;
+  }
+  #selected-info .day-pick button.candidate {
+    background: #fef7e0; color: #b06000; border-color: #fde293;
+    font-weight: 500;
+  }
+  #selected-info .day-pick button.candidate.active {
+    background: #fbbc04; color: #202124; border-color: #fbbc04;
+  }
+  /* Planner 內 2 欄並排：左 = 選中店家，右 = 行程 + 想去 */
+  .planner-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  .planner-selected, .planner-trip { min-width: 0; }
+
+  /* nearby panel：地圖右上 toggle overlay（避開 .map-filter 三排下拉，top 設 110px） */
+  #nearby-toggle {
+    position: absolute; right: 12px; top: 110px;
+    z-index: 1000;
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 38px; height: 38px;
+    cursor: pointer; font-size: 18px;
+    box-shadow: var(--shadow);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #nearby-toggle:hover { background: #f5f6f8; }
+  #nearby-toggle.active { background: #2962FF; color: #fff; border-color: #2962FF; }
+  #nearby-panel {
+    position: absolute; right: 12px; top: 158px;
+    width: 320px; max-height: calc(100vh - 230px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: var(--shadow);
+    z-index: 1000;
+    display: none; flex-direction: column;
+    overflow: hidden;
+  }
+  #nearby-panel.open { display: flex; }
+  .nearby-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+  }
+  .nearby-header h3 { margin: 0; font-size: 16px; }
+  .nearby-close {
+    background: transparent; border: none; cursor: pointer;
+    font-size: 20px; color: var(--text-soft); line-height: 1;
+    padding: 0 4px;
+  }
+  #nearby-panel .nb-center-info {
+    padding: 6px 12px; font-size: 16px; color: var(--text-soft);
+    border-bottom: 1px solid var(--border);
+  }
+  #nearby-panel #nearby-list {
+    flex: 1; overflow-y: auto;
+    border: none; border-radius: 0; max-height: none;
+  }
+
+  /* 附近店家清單（位於 selected-info 下方） */
+  #nearby-section h3 { margin: 14px 0 6px; font-size: 16px; }
+  #nearby-section .nb-center-info {
+    font-size: 16px; color: var(--text-soft); margin-bottom: 6px;
+  }
+  #nearby-list {
+    display: flex; flex-direction: column;
+    max-height: 50vh; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  #nearby-list .nb-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    cursor: pointer; font-size: 16px; gap: 8px;
+  }
+  #nearby-list .nb-row:last-child { border-bottom: none; }
+  #nearby-list .nb-row:hover { background: #f5f6f8; }
+  #nearby-list .nb-row.active { background: #e3f2fd; font-weight: 500; }
+  #nearby-list .nb-row .nb-name {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #nearby-list .nb-row .nb-meta {
+    display: flex; gap: 6px; flex-shrink: 0; color: var(--text-soft);
+  }
+  #nearby-list .nb-row .nb-rating { color: #d97706; font-weight: 500; }
+  #nearby-list .nb-empty {
+    padding: 12px; text-align: center; color: var(--text-soft);
+  }
+
+  /* 餐廳類別 marker：emoji on white circle */
+  .cat-marker {
+    background: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    line-height: 1;
+    box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    user-select: none;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    transition: transform .12s;
+  }
+  .cat-marker:hover { transform: scale(1.15); }
+
+  /* POI marker (景點 / 神社 / 寺廟) */
+  .poi-marker {
+    font-size: 16px;
+    line-height: 16px;
+    text-align: center;
+    text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
+    pointer-events: auto;
+    user-select: none;
+    width: 16px; height: 16px;
+  }
+  .poi-shrine { color: #B0413E; }
+  .poi-temple { color: #8E6E3D; }
+  .poi-attr { color: #1E5BB8; }
+
+  /* Kyoto Station marker */
+  .kyoto-pin {
+    background: var(--kyoto); color: #fff; border: 2px solid #fff;
+    border-radius: 18px 18px 18px 0;
+    width: 28px; height: 28px; transform: rotate(-45deg);
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .kyoto-pin span { transform: rotate(45deg); font-weight: 700; font-size: 16px; }
+
+  /* 機場 marker（大、藍） */
+  .airport-pin {
+    background: #0277BD; color: #fff; border: 2px solid #fff;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700;
+  }
+  /* 主要 JR / 私鐵車站 marker（小、橘） */
+  .station-pin {
+    background: #fff; color: #1f2937; border: 2px solid #00897B;
+    border-radius: 50%;
+    width: 18px; height: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  /* 飯店 marker（紫色） */
+  .hotel-pin {
+    background: #8E24AA; color: #fff; border: 2px solid #fff;
+    border-radius: 6px;
+    width: 24px; height: 24px;
+    box-shadow: 0 2px 6px rgba(0,0,0,.35);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+
+  /* RWD ----------------------------------------------------------------- */
+  @media (max-width: 900px) {
+    #app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 50px auto 1fr auto;
+      grid-template-areas: "header" "filter" "map" "planner";
+    }
+    aside#filter, aside#planner {
+      max-height: 0; padding: 0 14px; overflow: hidden;
+      border: 0;
+      transition: max-height .25s ease, padding .25s ease;
+    }
+    aside#filter.open, aside#planner.open {
+      max-height: 50vh; padding: 12px 14px; overflow-y: auto;
+      border-top: 1px solid var(--border);
+    }
+    header button.toggle { display: inline-block; }
+    header h1 { font-size: 16px; }
+    header .info { display: none; }
+    .day-tabs { grid-template-columns: repeat(5, 1fr); }
+    .planner-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <h1>🍱 京都美食地圖</h1>
+    <div class="region-tabs" id="region-tabs"></div>
+    <button class="toggle" id="toggle-filter">篩選</button>
+    <button class="toggle" id="toggle-planner">行程</button>
+    <div class="info">
+      目前顯示 <b id="info-shown">0</b> / <span id="info-total">0</span> 間
+      &nbsp;・&nbsp;
+      我的清單：<b id="info-mylist">0</b>
+    </div>
+  </header>
+
+  <aside id="filter">
+    <div class="filter-row">
+      <label class="filter-label" for="f-rating">最低評分</label>
+      <input type="range" id="f-rating" min="0" max="5.0" step="0.1" value="0">
+      <span class="filter-val"><b id="v-rating">0.0</b>★</span>
+    </div>
+    <div class="filter-row">
+      <label class="filter-label" for="f-reviews">最少評論數</label>
+      <input type="number" id="f-reviews" min="0" step="50" value="0">
+    </div>
+
+    <h2>地圖疊層</h2>
+
+    <div class="layer-subhead">
+      <span>🍱 餐廳類別</span>
+      <div class="cat-actions">
+        <button type="button" id="cat-all">全選</button>
+        <button type="button" id="cat-none">全取消</button>
+      </div>
+    </div>
+    <div id="cat-list"></div>
+
+    <div class="layer-subhead"><span>📍 景點</span></div>
+    <div class="row">
+      <input type="checkbox" id="f-poi-attr" checked>
+      <label for="f-poi-attr">★ 觀光景點</label>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="f-poi-shrine" checked>
+      <label for="f-poi-shrine">⛩ 神社</label>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="f-poi-temple" checked>
+      <label for="f-poi-temple">卍 寺廟</label>
+    </div>
+
+    <div class="layer-subhead"><span>🚇 交通與行政</span></div>
+    <div class="row">
+      <input type="checkbox" id="f-transit" checked>
+      <label for="f-transit">✈ 機場 / 🚉 主要車站 / 🏨 飯店</label>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="f-pref">
+      <label for="f-pref">🗾 京都府 / 大阪府 邊界</label>
+    </div>
+
+    <div style="margin-top: 16px; display: flex; gap: 6px;">
+      <button class="ghost" id="btn-reset">重設篩選</button>
+      <button class="ghost" id="btn-clear-all" title="清空所有狀態與行程">清空標記</button>
+    </div>
+
+    <h2 style="margin-top: 18px;">圖例</h2>
+    <div id="legend"></div>
+    <div class="row"><span class="swatch" style="background:var(--want); border:1px solid #b8860b"></span>想去（黃環）</div>
+    <div class="row"><span class="swatch" style="background:var(--kyoto);"></span>JR 京都駅（紅 pin）</div>
+    <div class="row"><span class="swatch" style="background:#0277BD;"></span>✈ 機場（KIX / 伊丹）</div>
+    <div class="row"><span class="swatch" style="background:#fff; border:2px solid #00897B;"></span>🚉 主要 JR / 私鐵車站</div>
+    <div class="row"><span class="swatch" style="background:#8E24AA;"></span>🏨 已訂飯店</div>
+    <div class="row"><span class="swatch" style="background:rgba(21,101,192,.04); border:2px dashed #1565C0;"></span>🗾 京都府 / 大阪府 邊界</div>
+    <div class="row" style="font-size:16px; color: var(--text-soft);">marker 大小：&ge;4.5★ 大 ・ 4.0–4.5 中 ・ &lt;4.0 小</div>
+  </aside>
+
+  <main id="map">
+    <div class="map-search">
+      <input type="text" id="map-search-input" placeholder="🔍 搜尋店家（限地圖上顯示）" autocomplete="off">
+      <div id="map-search-results" class="search-results"></div>
+    </div>
+    <div class="map-filter">
+      <div class="map-filter-row">
+        <span class="label">📍 中心</span>
+        <select id="map-station-filter">
+          <option value="">—</option>
+        </select>
+        <span class="sep">|</span>
+        <span class="label">顯示</span>
+        <select id="map-display-filter">
+          <option value="all">全部</option>
+          <option value="candidate">⭐ 候選</option>
+        </select>
+      </div>
+      <div class="map-filter-row">
+        <span class="label">狀態</span>
+        <select id="f-status">
+          <option value="all">全部</option>
+          <option value="want">想去</option>
+          <option value="planned">已排入</option>
+          <option value="unmarked">未標記</option>
+        </select>
+        <span class="sep">|</span>
+        <span class="label">🏆 百名店</span>
+        <select id="f-hyaku">
+          <option value="all">全部</option>
+          <option value="only">只看百名店</option>
+        </select>
+      </div>
+    </div>
+
+    <button id="nearby-toggle" title="附近店家清單">📍</button>
+    <div id="nearby-panel">
+      <div class="nearby-header">
+        <h3>📍 附近店家</h3>
+        <button class="nearby-close" title="關閉">×</button>
+      </div>
+      <div class="nb-center-info">
+        以 <span id="nb-center-name">JR 京都駅</span> 為中心，由近到遠
+      </div>
+      <div id="nearby-list"></div>
+    </div>
+  </main>
+
+  <aside id="planner">
+    <div class="planner-grid">
+      <div class="planner-selected">
+        <h2 style="margin-top:0;">⭐ 選中店家</h2>
+        <div id="selected-info" class="empty">點地圖上的店家標記查看完整資料</div>
+      </div>
+      <div class="planner-trip">
+        <h2 style="margin-top:0;">行程規劃 ・ 8/7–8/15</h2>
+        <div class="day-tabs" id="day-tabs"></div>
+        <div class="day-summary" id="day-summary"></div>
+        <div id="day-list" class="drop-zone"></div>
+
+        <h2 style="margin-top: 16px;">⭐ 想去清單</h2>
+        <div id="want-list"></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+
+// ============================================================
+// 常數
+// ============================================================
+const KYOTO = { lat: 34.985849, lng: 135.758767 };
+// 預設視野：聚焦京阪都心，南至 KIX 機場周邊（含和泉砂川 / 熊取）、北至京都市最北
+const DEFAULT_BOUNDS = [[34.36, 135.18], [35.13, 135.85]];
+
+// 機場（永遠顯示）
+const AIRPORTS = [
+  { name: "関西国際空港 (KIX)",     lat: 34.4347, lng: 135.2440 },
+  { name: "大阪国際空港 (伊丹 ITM)", lat: 34.7855, lng: 135.4382 },
+];
+
+// 已訂飯店（永遠顯示，含入住起始日）
+const HOTELS = [
+  { name: "🏨 ８INN 京都",            lat: 34.9750878, lng: 135.753978,  fromDay: "8/7"  },
+  { name: "🏨 LEGASTA 京都白川三条", lat: 35.0083761, lng: 135.7795409, fromDay: "8/11" },
+  { name: "🏨 KIX 機場套房",          lat: 34.411451,  lng: 135.2998282, fromDay: "8/15" },
+];
+
+// 主要 JR / 私鐵車站（永遠顯示，京都駅特別處理用大紅 pin）
+// line / order 僅供右上方車站下拉選單分組與排序使用
+const STATIONS = [
+  // JR 嵯峨野線
+  { name: "JR 二条駅",       lat: 35.0099, lng: 135.7396, line: "JR 嵯峨野線", order: 1 },
+  { name: "JR 嵯峨嵐山駅",   lat: 35.0184, lng: 135.6789, line: "JR 嵯峨野線", order: 2 },
+  // JR 琵琶湖線
+  { name: "JR 山科駅",       lat: 34.9852, lng: 135.8138, line: "JR 琵琶湖線", order: 1 },
+  // JR 奈良線
+  { name: "JR 宇治駅",       lat: 34.8849, lng: 135.7951, line: "JR 奈良線", order: 1 },
+  // JR 京都線（東海道本線：京都→大阪）
+  { name: "JR 高槻駅",       lat: 34.8512, lng: 135.6175, line: "JR 京都線", order: 1 },
+  { name: "JR 茨木駅",       lat: 34.8157, lng: 135.5734, line: "JR 京都線", order: 2 },
+  { name: "JR 新大阪駅",     lat: 34.7335, lng: 135.5003, line: "JR 京都線", order: 3 },
+  { name: "JR 大阪駅",       lat: 34.7024, lng: 135.4959, line: "JR 京都線", order: 4 },
+  // JR 大阪環状線
+  { name: "JR 京橋駅",       lat: 34.6964, lng: 135.5360, line: "JR 大阪環状線", order: 1 },
+  { name: "JR 鶴橋駅",       lat: 34.6663, lng: 135.5339, line: "JR 大阪環状線", order: 2 },
+  { name: "JR 天王寺駅",     lat: 34.6473, lng: 135.5141, line: "JR 大阪環状線", order: 3 },
+  // JR 大和路線
+  { name: "JR 難波駅",       lat: 34.6660, lng: 135.5018, line: "JR 大和路線", order: 1 },
+  // 京阪本線（北→南）
+  { name: "京阪 出町柳駅",   lat: 35.0297, lng: 135.7728, line: "京阪本線", order: 1 },
+  { name: "京阪 三条駅",     lat: 35.0090, lng: 135.7720, line: "京阪本線", order: 2 },
+  { name: "京阪 祇園四条駅", lat: 35.0036, lng: 135.7720, line: "京阪本線", order: 3 },
+  // 阪急京都線
+  { name: "阪急 烏丸駅",     lat: 35.0017, lng: 135.7596, line: "阪急京都線", order: 1 },
+  { name: "阪急 桂駅",       lat: 34.9810, lng: 135.7048, line: "阪急京都線", order: 2 },
+  // 南海本線
+  { name: "南海 なんば駅",   lat: 34.6644, lng: 135.5021, line: "南海本線", order: 1 },
+  // JR 関空線（最後一天 KIX 周邊；りんくうタウン駅有寄物櫃可寄行李）
+  { name: "JR 関西空港駅",   lat: 34.4347, lng: 135.2440, line: "JR 関空線", order: 1 },
+  { name: "JR りんくうタウン駅", lat: 34.4147, lng: 135.2952, line: "JR 関空線", order: 2 },
+  { name: "JR 日根野駅",     lat: 34.4002, lng: 135.3304, line: "JR 関空線", order: 3 },
+  { name: "JR 熊取駅",       lat: 34.3868, lng: 135.3592, line: "JR 関空線", order: 4 },
+];
+// optgroup 順序（飯店最上、JR 主要線在前）
+const STATION_LINE_ORDER = [
+  "🏨 飯店",
+  "JR 京都線", "JR 嵯峨野線", "JR 琵琶湖線", "JR 奈良線",
+  "JR 大阪環状線", "JR 大和路線", "JR 関空線",
+  "京阪本線", "阪急京都線", "南海本線",
+];
+// 「中心」下拉清單：飯店在最上，再加京都駅，最後 STATIONS
+const STATION_LIST = [
+  ...HOTELS.map((h, i) => ({
+    name: `${h.name} (${h.fromDay} 起)`,
+    lat: h.lat, lng: h.lng,
+    line: "🏨 飯店", order: i + 1,
+  })),
+  { name: "JR 京都駅", lat: KYOTO.lat, lng: KYOTO.lng, line: "JR 京都線", order: 0 },
+  ...STATIONS,
+];
+const REGIONS = ["全部", "中央", "東邊", "北邊", "西邊", "南邊", "宇治", "大阪 KIX", "其他"];
+const WARD_TO_REGION = {
+  "下京区": "中央", "中京区": "中央", "東山区": "中央",
+  "左京区": "東邊", "山科区": "東邊",
+  "北区": "北邊", "上京区": "北邊",
+  "右京区": "西邊", "西京区": "西邊",
+  "南区": "南邊", "伏見区": "南邊",
+};
+function regionOf(addr) {
+  if (!addr) return "其他";
+  // 掃 WARD_TO_REGION 的 key，cover「京都市XX区」「XX区 京都市 京都府」反向格式、
+  // 以及亂碼地址（例：「東東山区」含「東山区」子字串，仍能歸到東邊）。
+  for (const ward in WARD_TO_REGION) {
+    if (addr.includes(ward)) return WARD_TO_REGION[ward];
+  }
+  // 京都府其他市町（非京都市內）
+  if (addr.includes("宇治市") || addr.includes("宇治田原町")) return "宇治";
+  if (addr.includes("長岡京市") || addr.includes("向日市") || addr.includes("大山崎町")
+      || addr.includes("亀岡市") || addr.includes("南丹市") || addr.includes("京丹波町")) return "西邊";
+  if (addr.includes("八幡市") || addr.includes("城陽市") || addr.includes("久御山町")
+      || addr.includes("京田辺市") || addr.includes("木津川市") || addr.includes("精華町")
+      || addr.includes("和束町") || addr.includes("南山城村")) return "南邊";
+  return "其他";
+}
+const DAYS = ["8/7","8/8","8/9","8/10","8/11","8/12","8/13","8/14","8/15"];
+const DAY_COLORS = {
+  "8/7":"#FF1744","8/8":"#FF6F00","8/9":"#FFD600","8/10":"#00C853",
+  "8/11":"#00B8D4","8/12":"#2962FF","8/13":"#AA00FF","8/14":"#D500F9","8/15":"#6D4C41"
+};
+const CAT_COLORS = {
+  "鰻魚飯": "#C0392B",
+  "丼飯": "#B7950B",
+  "拉麵": "#FF8C00",
+  "抹茶甜點": "#16A085",
+  "燒烤": "#D81B60",
+  "居酒屋": "#1565C0",
+  "甜點": "#FF69B4",
+  "章魚燒": "#5D4037",
+  "炸豬排": "#BC6C25",
+  "飯糰專賣": "#2E7D32",
+  "日式洋食": "#8E44AD",
+  "日式早餐": "#F5B041",
+  "川床料理": "#00ACC1",
+  "神社": "#B0413E",
+  "寺廟": "#8E6E3D",
+  "觀光景點": "#1E5BB8",
+  "職人專門": "#A0522D",
+  "選物生活": "#9B59B6",
+  "文具": "#2E86AB",
+  "百貨": "#607D8B",
+  "超市": "#4CAF50",
+  "扭蛋": "#FF6B35",
+};
+const CAT_ICONS = {
+  "鰻魚飯": "🐟",
+  "丼飯": "🍚",
+  "拉麵": "🍜",
+  "抹茶甜點": "🍵",
+  "燒烤": "🍖",
+  "居酒屋": "🍶",
+  "甜點": "🍰",
+  "章魚燒": "🐙",
+  "炸豬排": "🍤",
+  "飯糰專賣": "🍙",
+  "日式洋食": "🍳",
+  "日式早餐": "🍞",
+  "川床料理": "🌊",
+  "神社": "⛩️",
+  "寺廟": "🧘",
+  "觀光景點": "🌸",
+  "職人專門": "🏺",
+  "選物生活": "🛍️",
+  "文具": "✏️",
+  "百貨": "🏬",
+  "超市": "🛒",
+  "扭蛋": "🎰",
+};
+const STORAGE_KEY = "kyoto-food-map-v1";
+const CSV_FILE = "all_restaurants.csv";
+
+// ============================================================
+// State
+// ============================================================
+const state = {
+  rows: [],          // 所有店家
+  markers: new Map(),// id -> Leaflet marker (divIcon emoji)
+  status: {},        // id -> "want" | "skip"
+  dayPlan: {},       // day -> [id]
+  activeDay: "8/7",
+  activeRegion: "全部",
+  selectedId: null,    // 點 marker 後在 planner 顯示
+  filters: {
+    categories: new Set(),
+    minRating: 0,
+    minReviews: 0,
+    statusFilter: "all",
+    displayMode: "all",   // all | candidate | <day like "8/7">
+    hyakumeitenOnly: false,
+  },
+  selectedStation: "",  // 用於「就近跳下一家」
+};
+DAYS.forEach(d => state.dayPlan[d] = []);
+
+// ============================================================
+// localStorage
+// ============================================================
+function loadPersisted() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    state.status = data.status || {};
+    if (data.dayPlan) {
+      for (const d of DAYS) {
+        state.dayPlan[d] = Array.isArray(data.dayPlan[d]) ? data.dayPlan[d] : [];
+      }
+    }
+    if (data.activeDay && DAYS.includes(data.activeDay)) state.activeDay = data.activeDay;
+    if (data.activeRegion && REGIONS.includes(data.activeRegion)) state.activeRegion = data.activeRegion;
+    if (data.displayMode && (data.displayMode === "all" || data.displayMode === "candidate" || DAYS.includes(data.displayMode))) {
+      state.filters.displayMode = data.displayMode;
+    }
+    if (typeof data.selectedStation === "string") {
+      state.selectedStation = data.selectedStation;
+    }
+    if (Array.isArray(data.categories)) {
+      state.filters.categories = new Set(data.categories);
+      state._categoriesLoaded = true;
+    }
+    if (typeof data.hyakumeitenOnly === "boolean") {
+      state.filters.hyakumeitenOnly = data.hyakumeitenOnly;
+    }
+  } catch (e) {
+    console.warn("讀取 localStorage 失敗", e);
+  }
+}
+function persist() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    status: state.status,
+    dayPlan: state.dayPlan,
+    activeDay: state.activeDay,
+    activeRegion: state.activeRegion,
+    displayMode: state.filters.displayMode,
+    selectedStation: state.selectedStation,
+    categories: [...state.filters.categories],
+    hyakumeitenOnly: state.filters.hyakumeitenOnly,
+  }));
+}
+
+// ============================================================
+// CSV
+// ============================================================
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const rows = [];
+  let row = [], cur = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"' && text[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else cur += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(cur); cur = ""; }
+      else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+      else if (c === "\r") { /* skip */ }
+      else cur += c;
+    }
+  }
+  if (cur.length || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+
+function csvToObjects(rows, forcedRegion) {
+  if (rows.length < 2) return [];
+  const header = rows[0];
+  const idx = (name) => header.indexOf(name);
+  const I = {
+    cat: idx("類別"), name: idx("店名"), nameJa: idx("日文店名"),
+    addr: idx("地址"), lat: idx("緯度"), lng: idx("經度"),
+    distance: idx("直線距離（km）"),
+    rating: idx("評分"), reviews: idx("評論數"), price: idx("價位等級"),
+    hours: idx("營業時間"),
+    transit: idx("交通時間（分鐘）"), walk: idx("步行時間（分鐘）"), transfers: idx("換乘次數"),
+    gmaps: idx("Google Maps連結"), web: idx("店家網站"), photo: idx("照片資源"),
+  };
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row.length || (row.length === 1 && !row[0])) continue;
+    const o = {
+      cat: row[I.cat] || "",
+      name: row[I.name] || "",
+      nameJa: row[I.nameJa] || "",
+      addr: row[I.addr] || "",
+      lat: parseFloat(row[I.lat]),
+      lng: parseFloat(row[I.lng]),
+      distance: I.distance >= 0 ? (parseFloat(row[I.distance]) || 0) : 0,
+      rating: parseFloat(row[I.rating]) || 0,
+      reviews: parseInt(row[I.reviews]) || 0,
+      price: row[I.price] || "",
+      hours: row[I.hours] || "",
+      transit: parseInt(row[I.transit]) || 0,
+      walk: parseInt(row[I.walk]) || 0,
+      transfers: parseInt(row[I.transfers]) || 0,
+      gmaps: row[I.gmaps] || "",
+      web: row[I.web] || "",
+      photo: row[I.photo] || "",
+    };
+    if (Number.isNaN(o.lat) || Number.isNaN(o.lng)) continue;
+    if (!o.distance) o.distance = +(haversineKm({lat: KYOTO.lat, lng: KYOTO.lng}, {lat: o.lat, lng: o.lng})).toFixed(2);
+    o.region = forcedRegion || regionOf(o.addr);
+    o.id = `${o.cat}::${o.name}::${o.lat.toFixed(5)},${o.lng.toFixed(5)}`;
+    out.push(o);
+  }
+  return out;
+}
+
+// ============================================================
+// 工具
+// ============================================================
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]
+  ));
+}
+
+function haversineKm(a, b) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+  const x = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+// 直線估算 → 步行時間（路徑因子 1.3，步速 4.5 km/h）
+function walkMinutesBetween(a, b) {
+  return Math.max(1, Math.round(haversineKm(a, b) * 1.3 / 4.5 * 60));
+}
+
+function dayContaining(id) {
+  for (const d of DAYS) if (state.dayPlan[d].includes(id)) return d;
+  return null;
+}
+
+function ratingSize(r) {
+  // emoji marker 整體外徑 px
+  if (r >= 4.5) return 30;
+  if (r >= 4.0) return 24;
+  return 19;
+}
+
+function getStoreById(id) {
+  return state.rows.find(r => r.id === id);
+}
+
+// ============================================================
+// 地圖初始化
+// ============================================================
+let map;
+let markersLayer;
+let attrLayer, shrineLayer, templeLayer;
+let transitLayer;
+let prefectureLayer;
+const POI_BBOX = [34.92, 135.62, 35.07, 135.88]; // 京都市中心區域
+
+function initMap() {
+  map = L.map("map", { zoomControl: true }).setView([KYOTO.lat, KYOTO.lng], 13);
+  // CartoDB Voyager (no labels)：彩色街道、河流、地形顏色，但不顯示任何文字 / POI 圖示
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png", {
+    subdomains: "abcd",
+    maxZoom: 20,
+    attribution: '© <a href="https://openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/attributions">CARTO</a>',
+  }).addTo(map);
+
+  // 順序：府界（最底）→ POI → 交通 → 餐廳 markers
+  // prefectureLayer 預設不 addTo map（使用者勾 checkbox 才顯示，避免一打開地圖就被線蓋住）
+  prefectureLayer = L.layerGroup();
+  attrLayer = L.layerGroup().addTo(map);
+  shrineLayer = L.layerGroup().addTo(map);
+  templeLayer = L.layerGroup().addTo(map);
+  transitLayer = L.layerGroup().addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+
+  renderTransit();
+}
+
+// 機場 + 主要車站永遠顯示，不受區域分頁 / 篩選影響
+function renderTransit() {
+  // 機場：藍色大 ✈
+  for (const a of AIRPORTS) {
+    const icon = L.divIcon({
+      className: "",
+      html: `<div class="airport-pin">✈</div>`,
+      iconSize: [28, 28], iconAnchor: [14, 14],
+    });
+    L.marker([a.lat, a.lng], { icon, zIndexOffset: 2000 })
+      .bindTooltip(a.name, { direction: "top", offset: [0, -10], permanent: false })
+      .bindPopup(`<b>${escapeHtml(a.name)}</b>`)
+      .addTo(transitLayer);
+  }
+  // 京都駅特殊處理：保留紅色 pin（行程起點意象）
+  const kyotoIcon = L.divIcon({
+    className: "",
+    html: '<div class="kyoto-pin"><span>🚉</span></div>',
+    iconSize: [28, 28], iconAnchor: [0, 28],
+  });
+  L.marker([KYOTO.lat, KYOTO.lng], { icon: kyotoIcon, zIndexOffset: 1500 })
+    .bindTooltip("JR 京都駅", { direction: "top", offset: [-2, -28] })
+    .bindPopup("<b>JR 京都駅 / Kyoto Station</b>")
+    .addTo(transitLayer);
+  // 其他主要車站
+  for (const s of STATIONS) {
+    const icon = L.divIcon({
+      className: "",
+      html: `<div class="station-pin">🚉</div>`,
+      iconSize: [18, 18], iconAnchor: [9, 9],
+    });
+    L.marker([s.lat, s.lng], { icon, zIndexOffset: 1000 })
+      .bindTooltip(s.name, { direction: "top", offset: [0, -6], permanent: false })
+      .bindPopup(`<b>${escapeHtml(s.name)}</b>`)
+      .addTo(transitLayer);
+  }
+  renderHotels();
+}
+
+// 飯店：建立 marker 但只在 displayMode 為 全部 / 候選 時全顯，
+// 指定日期則只顯該日期入住的飯店
+const hotelMarkers = [];  // [{ marker, hotel }]
+function renderHotels() {
+  hotelMarkers.length = 0;
+  for (const h of HOTELS) {
+    const icon = L.divIcon({
+      className: "",
+      html: `<div class="hotel-pin">🏨</div>`,
+      iconSize: [24, 24], iconAnchor: [12, 12],
+    });
+    const m = L.marker([h.lat, h.lng], { icon, zIndexOffset: 1800 })
+      .bindTooltip(`${h.name}（${h.fromDay} 起）`, { direction: "top", offset: [0, -10], permanent: false })
+      .bindPopup(`<b>${escapeHtml(h.name)}</b><br><span style="color:#5f6368;font-size:16px;">入住：${h.fromDay} 起</span>`);
+    hotelMarkers.push({ marker: m, hotel: h });
+  }
+  applyHotelVisibility();
+}
+
+// 取出某日該住的飯店（換房日會回兩間）
+function getHotelsForDay(day) {
+  const dayIdx = DAYS.indexOf(day);
+  if (dayIdx < 0) return [];
+  const sorted = HOTELS.slice().sort(
+    (a, b) => DAYS.indexOf(a.fromDay) - DAYS.indexOf(b.fromDay)
+  );
+  const result = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const h = sorted[i];
+    const startIdx = DAYS.indexOf(h.fromDay);
+    // 結束日：下一間飯店的入住日（含當天，當天兩間都顯示）；最後一間則只當天
+    const endIdx = i < sorted.length - 1
+      ? DAYS.indexOf(sorted[i + 1].fromDay)
+      : startIdx;
+    if (dayIdx >= startIdx && dayIdx <= endIdx) result.push(h);
+  }
+  return result;
+}
+
+function applyHotelVisibility() {
+  const mode = state.filters.displayMode;
+  let visible;
+  if (mode === "all" || mode === "candidate") {
+    visible = new Set(HOTELS);
+  } else if (DAYS.includes(mode)) {
+    visible = new Set(getHotelsForDay(mode));
+  } else {
+    visible = new Set(HOTELS);
+  }
+  for (const { marker, hotel } of hotelMarkers) {
+    if (visible.has(hotel)) {
+      if (!transitLayer.hasLayer(marker)) transitLayer.addLayer(marker);
+    } else {
+      if (transitLayer.hasLayer(marker)) transitLayer.removeLayer(marker);
+    }
+  }
+}
+
+// ============================================================
+// 府界層（京都府 / 大阪府 admin_level=4 polygon，從 Overpass API 抓）
+// ============================================================
+async function loadPrefectures() {
+  // 優先用預生成的 prefectures.js（generate_prefectures.py 產出，已是「主 ring 一條」格式）
+  if (Array.isArray(window.__PREFECTURES_DATA)) {
+    renderPrefectures(window.__PREFECTURES_DATA.map(p => ({ name: p.name, rings: [p.ring] })));
+    return;
+  }
+  // fallback：透過 http(s):// origin 開啟時，可即時抓 Overpass（file:// 因 CORS 擋住會失敗）
+  const CACHE_KEY = "kyoto-osaka-pref-v1";
+  const TTL_MS = 30 * 24 * 3600 * 1000;
+  let prefs = null;
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      const data = JSON.parse(cached);
+      if (data.ts && Date.now() - data.ts < TTL_MS) prefs = data.prefs;
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!prefs) {
+    const query = `[out:json][timeout:120];
+(
+  relation["ISO3166-2"="JP-26"];
+  relation["ISO3166-2"="JP-27"];
+);
+(._;>;);
+out;`;
+    try {
+      const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      prefs = parseAdminBoundary(data);
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), prefs }));
+    } catch (e) {
+      console.warn("府界抓取失敗（file:// 會被 CORS 擋，請跑 python generate_prefectures.py 產 prefectures.js）：", e);
+      return;
+    }
+  }
+  renderPrefectures(prefs);
+}
+
+// 把 Overpass relation/way/node 拼成 polygon ring 序列
+function parseAdminBoundary(osm) {
+  const nodes = {};
+  const ways = {};
+  const relations = [];
+  for (const e of osm.elements || []) {
+    if (e.type === "node") nodes[e.id] = [e.lat, e.lon];
+    else if (e.type === "way") ways[e.id] = e.nodes;
+    else if (e.type === "relation") relations.push(e);
+  }
+  const out = [];
+  for (const rel of relations) {
+    const name = (rel.tags && rel.tags.name) || "";
+    const outerWays = (rel.members || [])
+      .filter(m => m.type === "way" && (m.role === "outer" || m.role === ""))
+      .map(m => ways[m.ref])
+      .filter(Boolean);
+    const ringIds = assembleRings(outerWays);
+    const rings = ringIds
+      .map(r => r.map(nid => nodes[nid]).filter(Boolean))
+      .filter(r => r.length >= 4);
+    if (rings.length) out.push({ name, rings });
+  }
+  return out;
+}
+
+// 串接 ways 成 closed rings（一個 way 結尾接下一個 way 起頭，方向不固定）
+function assembleRings(wayList) {
+  const pool = wayList.map(w => w.slice());
+  const rings = [];
+  while (pool.length > 0) {
+    let ring = pool.shift();
+    let changed = true;
+    while (changed && pool.length > 0) {
+      changed = false;
+      for (let i = 0; i < pool.length; i++) {
+        const w = pool[i];
+        const last = ring[ring.length - 1];
+        const first = ring[0];
+        if (last === w[0])              { ring = ring.concat(w.slice(1));                    pool.splice(i,1); changed = true; break; }
+        if (last === w[w.length - 1])   { ring = ring.concat(w.slice().reverse().slice(1)); pool.splice(i,1); changed = true; break; }
+        if (first === w[w.length - 1])  { ring = w.slice(0,-1).concat(ring);                pool.splice(i,1); changed = true; break; }
+        if (first === w[0])             { ring = w.slice().reverse().slice(0,-1).concat(ring); pool.splice(i,1); changed = true; break; }
+      }
+    }
+    if (ring.length > 3 && ring[0] === ring[ring.length - 1]) rings.push(ring);
+  }
+  return rings;
+}
+
+function renderPrefectures(prefs) {
+  // 只保留每府最大的 ring（外框），丟掉離島 / 飛地，避免「碎一堆小塊」
+  for (const pref of prefs) {
+    if (!pref.rings.length) continue;
+    const mainRing = pref.rings.reduce(
+      (a, b) => (b.length > a.length ? b : a),
+      pref.rings[0]
+    );
+    L.polygon(mainRing, {
+      color: "#1565C0",
+      weight: 1.2,
+      opacity: 0.45,
+      fillColor: "#1565C0",
+      fillOpacity: 0.03,
+      dashArray: "12,6",
+      smoothFactor: 5,     // pixel-based simplify，根據 zoom 自動降點
+      interactive: false,
+    }).addTo(prefectureLayer);
+  }
+  console.log(`府界已載入 ${prefs.length} 府（只顯示主外框）`);
+}
+
+// ============================================================
+// POI 層（觀光景點 / 神社 / 寺廟，從 Overpass API 抓）
+// ============================================================
+async function loadPOIs() {
+  const CACHE_KEY = "kyoto-poi-v1";
+  const TTL_MS = 7 * 24 * 3600 * 1000;
+  let pois = null;
+  try {
+    const cached = localStorage.getItem(CACHE_KEY);
+    if (cached) {
+      const data = JSON.parse(cached);
+      if (data.ts && Date.now() - data.ts < TTL_MS) pois = data.pois;
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!pois) {
+    const bbox = POI_BBOX.join(",");
+    const query = `[out:json][timeout:25];
+(
+  node["tourism"="attraction"](${bbox});
+  node["historic"~"shrine|temple|monastery"](${bbox});
+  node["amenity"="place_of_worship"]["religion"~"shinto|buddhist"](${bbox});
+);
+out body;`;
+    try {
+      const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      pois = (data.elements || []).map(e => ({
+        lat: e.lat,
+        lng: e.lon,
+        name: (e.tags && (e.tags.name || e.tags["name:en"])) || "",
+        type: classifyPOI(e.tags || {}),
+      }));
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), pois }));
+    } catch (e) {
+      console.warn("POI 抓取失敗：", e);
+      return;
+    }
+  }
+  renderPOIs(pois);
+}
+
+function classifyPOI(tags) {
+  if (tags.religion === "shinto" || tags.historic === "shrine") return "shrine";
+  if (tags.religion === "buddhist" || tags.historic === "temple" || tags.historic === "monastery") return "temple";
+  return "attr";
+}
+
+function renderPOIs(pois) {
+  const symbols = { shrine: "⛩", temple: "卍", attr: "★" };
+  for (const p of pois) {
+    const sym = symbols[p.type] || "★";
+    const icon = L.divIcon({
+      className: "",
+      html: `<div class="poi-marker poi-${p.type}">${sym}</div>`,
+      iconSize: [16, 16], iconAnchor: [8, 8],
+    });
+    const m = L.marker([p.lat, p.lng], { icon, interactive: !!p.name });
+    if (p.name) m.bindTooltip(p.name, { direction: "top", offset: [0, -4] });
+    const target = p.type === "shrine" ? shrineLayer
+                 : p.type === "temple" ? templeLayer
+                 : attrLayer;
+    target.addLayer(m);
+  }
+  console.log(`POI 已載入 ${pois.length} 個`);
+}
+
+// ============================================================
+// Marker 樣式：emoji + 狀態環
+// ============================================================
+function markerIconFor(store) {
+  const day = dayContaining(store.id);
+  const status = state.status[store.id];
+  const sz = ratingSize(store.rating);
+  const ico = CAT_ICONS[store.cat] || "📍";
+
+  // 環色與粗細編碼狀態（預設細淺灰，避免搶過 emoji）
+  let ring, ringW;
+  if (status === "want")      { ring = "#F1C40F"; ringW = 3; }
+  else if (day)               { ring = DAY_COLORS[day]; ringW = 3; }
+  else if (status === "skip") { ring = "#9ca3af"; ringW = 1.5; }
+  else                        { ring = "#dadce0"; ringW = 1; }
+
+  const opacity = status === "skip" ? 0.45 : 1;
+  const fontSz = Math.round(sz * 0.62);
+  const html = `<div class="cat-marker" style="width:${sz}px;height:${sz}px;border:${ringW}px solid ${ring};opacity:${opacity};font-size:${fontSz}px;">${ico}</div>`;
+
+  return L.divIcon({
+    className: "",
+    html,
+    iconSize: [sz, sz], iconAnchor: [sz/2, sz/2],
+  });
+}
+
+function refreshMarkerStyle(store) {
+  const m = state.markers.get(store.id);
+  if (m) m.setIcon(markerIconFor(store));
+}
+
+// ============================================================
+// Marker 建立
+// ============================================================
+function buildMarkers() {
+  markersLayer.clearLayers();
+  state.markers.clear();
+  const inRegion = state.activeRegion === "全部"
+    ? state.rows
+    : state.rows.filter(s => s.region === state.activeRegion);
+  for (const s of inRegion) {
+    const m = L.marker([s.lat, s.lng], { icon: markerIconFor(s) });
+    // 不再使用地圖 popup；點 marker 直接同步右側選中店家面板
+    m.on("click", () => updateSelectedInfo(s));
+    state.markers.set(s.id, m);
+  }
+}
+
+const JA_DAYS = ["日曜日","月曜日","火曜日","水曜日","木曜日","金曜日","土曜日"];
+
+// 解析 Google Places 「月曜日: 8時45分～17時00分 | ...」格式
+function parseHours(raw) {
+  const pad = n => String(n).padStart(2, "0");
+  const fmtRange = seg => {
+    const m = seg.match(/(\d{1,2})時(?:(\d{1,2})分?)?\s*[～~\-－]\s*(\d{1,2})時(?:(\d{1,2})分?)?/);
+    if (!m) return { raw: seg.trim() };
+    const sH = +m[1], sM = +(m[2]||0), eH = +m[3], eM = +(m[4]||0);
+    return {
+      text: `${pad(sH)}:${pad(sM)}-${pad(eH)}:${pad(eM)}`,
+      sMin: sH*60 + sM,
+      eMin: eH*60 + eM, // 可大於 1440 表跨日
+    };
+  };
+  return raw.split(/\s*\|\s*/).map(line => {
+    const m = line.match(/^(.+?):\s*(.*)$/);
+    if (!m) return { day: line.trim(), ranges: [], closed: false };
+    const day = m[1].trim();
+    const rest = m[2].trim();
+    if (!rest) return { day, ranges: [], closed: false };
+    if (/定休|休業|休み|closed/i.test(rest)) return { day, closed: true, label: rest };
+    if (/24\s*時間|終日/.test(rest)) {
+      return { day, ranges: [{ text: "24 小時營業", sMin: 0, eMin: 1440 }] };
+    }
+    const ranges = rest.split(/\s*[,、，／/]\s*/).filter(Boolean).map(fmtRange);
+    return { day, ranges, closed: false };
+  });
+}
+
+// 計算當下營業狀態
+function computeOpenStatus(parsed) {
+  const now = new Date();
+  const dayIdx = now.getDay();
+  const curMin = now.getHours()*60 + now.getMinutes();
+  const today = parsed.find(h => h.day === JA_DAYS[dayIdx]);
+  if (today && !today.closed) {
+    for (const r of today.ranges) {
+      if (r.sMin == null) continue;
+      if (curMin >= r.sMin && curMin < r.eMin) {
+        const closeText = r.text.split('-')[1];
+        return { open: true, label: `${closeText} 打烊` };
+      }
+    }
+    for (const r of today.ranges) {
+      if (r.sMin != null && curMin < r.sMin) {
+        return { open: false, label: `${r.text.split('-')[0]} 開店` };
+      }
+    }
+  }
+  for (let i = 1; i <= 7; i++) {
+    const d = parsed.find(h => h.day === JA_DAYS[(dayIdx + i) % 7]);
+    if (d && !d.closed && d.ranges.length && d.ranges[0].text) {
+      const label = i === 1 ? "明日" : d.day;
+      return { open: false, label: `${label} ${d.ranges[0].text.split('-')[0]} 開店` };
+    }
+  }
+  return { open: null, label: "" };
+}
+
+// sidebar：仿 Google Maps 樣式
+// 食べログ 百名店：依 lat,lng 查 __HYAKUMEITEN_DATA，回傳 awards 陣列或 null
+function getHyakumeitenAwards(store) {
+  if (!window.__HYAKUMEITEN_DATA) return null;
+  if (store.lat == null || store.lng == null) return null;
+  const key = `${store.lat.toFixed(5)},${store.lng.toFixed(5)}`;
+  return window.__HYAKUMEITEN_DATA[key] || null;
+}
+
+function buildSelectedInfoHtml(store) {
+  const status = state.status[store.id];
+  const day = dayContaining(store.id);
+  const stars = store.rating
+    ? "★".repeat(Math.floor(store.rating)) + (store.rating % 1 >= 0.5 ? "½" : "")
+    : "";
+  const todayJa = JA_DAYS[new Date().getDay()];
+  const dayBtns = DAYS.map(d =>
+    `<button onclick="window.UI.assignDay('${store.id}','${d}')"
+      class="${day === d ? 'assigned' : ''}">${d}</button>`
+  ).join("");
+
+  // 評分行
+  const ratingLine = store.rating
+    ? `<div class="gm-rating">
+         <span class="num">${store.rating}</span>
+         <span class="stars">${stars}</span>
+         <span class="reviews">(${(store.reviews || 0).toLocaleString()})</span>
+       </div>`
+    : "";
+
+  // 類別 / 價位
+  const tagBits = [store.cat, store.price].filter(Boolean).map(escapeHtml).join(" ・ ");
+  const tagLine = tagBits ? `<div class="gm-tags">${tagBits}</div>` : "";
+
+  // 動作列
+  const actGmaps = store.gmaps
+    ? `<a class="gm-action" href="${escapeHtml(store.gmaps)}" target="_blank" rel="noopener">
+         <span class="icon">🧭</span><span>導航</span>
+       </a>`
+    : "";
+  const actWeb = store.web
+    ? `<a class="gm-action" href="${escapeHtml(store.web)}" target="_blank" rel="noopener">
+         <span class="icon">🌐</span><span>網站</span>
+       </a>`
+    : "";
+  const actWant = `<button class="gm-action want ${status==='want'?'active':''}"
+    onclick="window.UI.toggleStatus('${store.id}','want')">
+      <span class="icon">⭐</span><span>${status==='want'?'已想去':'想去'}</span>
+    </button>`;
+  const actSkip = `<button class="gm-action skip ${status==='skip'?'active':''}"
+    onclick="window.UI.toggleStatus('${store.id}','skip')">
+      <span class="icon">🚫</span><span>${status==='skip'?'已排除':'排除'}</span>
+    </button>`;
+
+  // 食べログ 百名店徽章
+  let hyakuRow = "";
+  const awards = getHyakumeitenAwards(store);
+  if (awards && awards.length) {
+    const byLabel = new Map();
+    for (const a of awards) {
+      if (!byLabel.has(a.label)) byLabel.set(a.label, []);
+      byLabel.get(a.label).push(a.year);
+    }
+    const items = [...byLabel.entries()].map(([label, years]) => {
+      years.sort((a, b) => a - b);
+      return `<div class="hyaku-item"><b>${escapeHtml(label)}</b>百名店<span class="hyaku-years">${years.join(", ")}</span></div>`;
+    }).join("");
+    hyakuRow = `
+      <div class="gm-row hyaku-row">
+        <span class="gm-icon">🏆</span>
+        <div class="gm-content">
+          <div class="hyaku-title">食べログ 百名店</div>
+          ${items}
+        </div>
+      </div>`;
+  }
+
+  // 地址
+  const addrRow = store.addr
+    ? `<div class="gm-row">
+         <span class="gm-icon">📍</span>
+         <span class="gm-content">${escapeHtml(store.addr)}</span>
+       </div>`
+    : "";
+
+  // 營業時間
+  let hoursRow = "";
+  if (store.hours) {
+    const parsed = parseHours(store.hours);
+    const st = computeOpenStatus(parsed);
+    const statusBadge = st.open === true
+      ? `<span class="badge open">營業中</span>`
+      : st.open === false
+        ? `<span class="badge closed">已打烊</span>`
+        : `<span class="badge">營業時間</span>`;
+    const sep = st.label ? `<span class="sep">・</span><span>${escapeHtml(st.label)}</span>` : "";
+    const rows = parsed.map(h => {
+      const isToday = h.day === todayJa ? " today" : "";
+      const times = h.closed
+        ? `<div class="times closed">${escapeHtml(h.label || "公休")}</div>`
+        : `<div class="times">${
+            (h.ranges.length ? h.ranges : [{ text: "—" }])
+              .map(r => `<div>${escapeHtml(r.text || r.raw || "—")}</div>`).join("")
+          }</div>`;
+      return `<div class="hr-row${isToday}">
+                <span class="day">${escapeHtml(h.day)}</span>
+                ${times}
+              </div>`;
+    }).join("");
+    hoursRow = `
+      <div class="gm-row">
+        <span class="gm-icon">🕒</span>
+        <div class="gm-content">
+          <div class="hours-status" onclick="window.UI.toggleHours(this)">
+            ${statusBadge}${sep}<span class="chevron">▼</span>
+          </div>
+          <div class="hours-list">${rows}</div>
+        </div>
+      </div>`;
+  }
+
+  // 網站（顯示為 hostname，比照 Google Maps）
+  let webRow = "";
+  if (store.web) {
+    let host = store.web;
+    try { host = new URL(store.web).hostname.replace(/^www\./, ""); } catch (e) {}
+    webRow = `<div class="gm-row">
+                <span class="gm-icon">🌐</span>
+                <a class="gm-content" href="${escapeHtml(store.web)}" target="_blank" rel="noopener">${escapeHtml(host)}</a>
+              </div>`;
+  }
+
+  // 行程加入：僅在「想去」或已排入時顯示
+  const showTrip = status === "want" || !!day;
+  const candidateActive = status === "want" && !day;
+  const tripRow = showTrip ? `
+    <div class="gm-row">
+      <span class="gm-icon">📅</span>
+      <div class="gm-content">
+        <div>加入行程${day ? `（目前：<b>${day}</b>）` : "（候選中，尚未排入日期）"}</div>
+        <div class="day-pick">
+          <button class="candidate ${candidateActive ? 'active' : ''}"
+            onclick="window.UI.markCandidate('${store.id}')">⭐ 候選</button>
+          ${dayBtns}
+        </div>
+      </div>
+    </div>` : "";
+
+  return `
+    <h3>${escapeHtml(store.name)}</h3>
+    ${store.nameJa && store.nameJa !== store.name
+      ? `<div class="lang-ja">${escapeHtml(store.nameJa)}</div>` : ""}
+    ${ratingLine}
+    ${tagLine}
+    <div class="gm-actions">${actGmaps}${actWant}${actWeb}${actSkip}</div>
+    ${hyakuRow}
+    ${addrRow}
+    ${hoursRow}
+    ${webRow}
+    ${tripRow}
+  `;
+}
+
+// 在 planner 頂部同步顯示選中店家資料
+function updateSelectedInfo(store) {
+  state.selectedId = store.id;
+  const el = document.getElementById("selected-info");
+  if (!el) return;
+  el.classList.remove("empty");
+  el.innerHTML = buildSelectedInfoHtml(store);
+  // 同步附近清單的 active highlight（不重 render，保留 scroll 位置）
+  document.querySelectorAll("#nearby-list .nb-row").forEach(el => {
+    el.classList.toggle("active", el.dataset.id === state.selectedId);
+  });
+}
+
+function refreshSelectedInfo() {
+  if (!state.selectedId) return;
+  const s = getStoreById(state.selectedId);
+  if (!s) return;
+  const el = document.getElementById("selected-info");
+  if (el) el.innerHTML = buildSelectedInfoHtml(s);
+}
+
+function changeRegion(r) {
+  state.activeRegion = r;
+  persist();
+  buildMarkers();
+  applyFilters();
+  renderRegionTabs();
+  // 「全部」用預設視野（京阪宇治+KIX）；單區則自動縮放到該區
+  if (state.activeRegion === "全部") {
+    map.fitBounds(DEFAULT_BOUNDS, { padding: [20, 20] });
+  } else {
+    const inRegion = state.rows.filter(s => s.region === state.activeRegion);
+    if (inRegion.length > 0) {
+      const bounds = L.latLngBounds(inRegion.map(s => [s.lat, s.lng]));
+      map.fitBounds(bounds, { padding: [40, 40] });
+    }
+  }
+}
+
+function renderRegionTabs() {
+  const tabs = document.getElementById("region-tabs");
+  if (!tabs) return;
+  tabs.innerHTML = "";
+  const counts = {};
+  state.rows.forEach(s => { counts[s.region] = (counts[s.region] || 0) + 1; });
+  const total = state.rows.length;
+  for (const r of REGIONS) {
+    const cnt = r === "全部" ? total : (counts[r] || 0);
+    if (r !== "全部" && cnt === 0) continue;
+    const btn = document.createElement("button");
+    btn.className = (r === state.activeRegion) ? "active" : "";
+    btn.innerHTML = `${r}<span class="badge">${cnt}</span>`;
+    btn.addEventListener("click", () => changeRegion(r));
+    tabs.appendChild(btn);
+  }
+}
+
+// ============================================================
+// 篩選 & 顯示
+// ============================================================
+function passesFilter(s) {
+  const f = state.filters;
+  if (!f.categories.has(s.cat)) return false;
+  if (s.rating < f.minRating) return false;
+  if (s.reviews < f.minReviews) return false;
+  const status = state.status[s.id];
+  const inPlan = !!dayContaining(s.id);
+  switch (f.statusFilter) {
+    case "want":
+      if (status !== "want" && !inPlan) return false;
+      break;
+    case "planned":
+      if (!inPlan) return false;
+      break;
+    case "unmarked":
+      if (status || inPlan) return false;
+      break;
+    case "all":
+    default:
+      // 不考慮可看見但仍透明
+      break;
+  }
+  // 地圖右上的顯示選單：候選 / 特定日期
+  const dayOf = dayContaining(s.id);
+  if (f.displayMode === "candidate") {
+    if (status !== "want" || dayOf) return false;
+  } else if (f.displayMode !== "all") {
+    if (dayOf !== f.displayMode) return false;
+  }
+  // 🏆 百名店篩選
+  if (f.hyakumeitenOnly) {
+    const awards = getHyakumeitenAwards(s);
+    if (!awards || !awards.length) return false;
+  }
+  return true;
+}
+
+function applyFilters() {
+  let shown = 0;
+  let inRegionTotal = 0;
+  for (const s of state.rows) {
+    if (state.activeRegion !== "全部" && s.region !== state.activeRegion) continue;
+    inRegionTotal++;
+    const m = state.markers.get(s.id);
+    if (!m) continue;
+    if (passesFilter(s)) {
+      if (!markersLayer.hasLayer(m)) markersLayer.addLayer(m);
+      shown++;
+    } else {
+      if (markersLayer.hasLayer(m)) markersLayer.removeLayer(m);
+    }
+  }
+  document.getElementById("info-shown").textContent = shown;
+  document.getElementById("info-total").textContent = inRegionTotal;
+  updateMyListCount();
+  renderNearbyList();
+}
+
+// 附近同類店家清單：以 state.selectedStation 為中心（沒選 → 京都駅），
+// 列出目前可見 marker 的店家，按距離由近到遠。點擊跳到該店並選中。
+function renderNearbyList() {
+  const list = document.getElementById("nearby-list");
+  const centerLabel = document.getElementById("nb-center-name");
+  if (!list) return;
+  const station = STATION_LIST.find(s => s.name === state.selectedStation);
+  const center = station ? { lat: station.lat, lng: station.lng } : KYOTO;
+  if (centerLabel) {
+    centerLabel.textContent = station ? station.name : "JR 京都駅";
+  }
+  // 附近店家清單只看「類別 + 狀態 + 顯示模式」，不受 region / 評分 / 評論數限制，
+  // 讓使用者可以跨區、不論評分高低瀏覽該類別所有店家。
+  const f = state.filters;
+  const visible = [];
+  for (const s of state.rows) {
+    if (s.lat == null || s.lng == null) continue;
+    if (!f.categories.has(s.cat)) continue;
+    const status = state.status[s.id];
+    const inPlan = !!dayContaining(s.id);
+    if (f.statusFilter === "want" && status !== "want" && !inPlan) continue;
+    if (f.statusFilter === "planned" && !inPlan) continue;
+    if (f.statusFilter === "unmarked" && (status || inPlan)) continue;
+    const dayOf = dayContaining(s.id);
+    if (f.displayMode === "candidate") {
+      if (status !== "want" || dayOf) continue;
+    } else if (f.displayMode !== "all" && dayOf !== f.displayMode) {
+      continue;
+    }
+    if (f.hyakumeitenOnly) {
+      const awards = getHyakumeitenAwards(s);
+      if (!awards || !awards.length) continue;
+    }
+    visible.push(s);
+  }
+  visible.sort((a, b) =>
+    haversineKm(center, { lat: a.lat, lng: a.lng })
+    - haversineKm(center, { lat: b.lat, lng: b.lng })
+  );
+  if (visible.length === 0) {
+    list.innerHTML = `<div class="nb-empty">沒有可顯示的店家</div>`;
+    return;
+  }
+  const html = visible.slice(0, 80).map(s => {
+    const ico = CAT_ICONS[s.cat] || "📍";
+    const d = haversineKm(center, { lat: s.lat, lng: s.lng }).toFixed(1);
+    const rating = s.rating || "-";
+    const cls = state.selectedId === s.id ? "nb-row active" : "nb-row";
+    return `<div class="${cls}" data-id="${s.id}">
+        <span class="nb-name">${ico} ${escapeHtml(s.name)}</span>
+        <span class="nb-meta"><span class="nb-rating">⭐${rating}</span><span>${d}km</span></span>
+      </div>`;
+  }).join("");
+  list.innerHTML = html;
+  list.querySelectorAll(".nb-row").forEach(el => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.id;
+      const s = state.rows.find(r => r.id === id);
+      if (!s) return;
+      map.setView([s.lat, s.lng], 16);
+      updateSelectedInfo(s);
+    });
+  });
+}
+
+function updateMyListCount() {
+  const planned = new Set();
+  for (const d of DAYS) state.dayPlan[d].forEach(id => planned.add(id));
+  let want = 0;
+  for (const id of Object.keys(state.status)) {
+    if (state.status[id] === "want" && !planned.has(id)) want++;
+  }
+  document.getElementById("info-mylist").textContent = want + planned.size;
+}
+
+// ============================================================
+// 篩選 UI
+// ============================================================
+function setupFilterUI() {
+  // 類別 checkbox：若 localStorage 沒存則預設全勾，反之套用上次狀態
+  const cats = [...new Set(state.rows.map(r => r.cat))];
+  if (!state._categoriesLoaded) {
+    cats.forEach(c => state.filters.categories.add(c));
+  }
+  const catList = document.getElementById("cat-list");
+  catList.innerHTML = "";
+  const legend = document.getElementById("legend");
+  if (legend) legend.innerHTML = "";
+  cats.forEach(c => {
+    const id = `cat-${c}`;
+    const div = document.createElement("div");
+    div.className = "row";
+    const ico = CAT_ICONS[c] || "•";
+    const checked = state.filters.categories.has(c) ? "checked" : "";
+    div.innerHTML = `
+      <input type="checkbox" id="${id}" ${checked}>
+      <label for="${id}"><span class="cat-ico">${ico}</span>${escapeHtml(c)} (${state.rows.filter(r=>r.cat===c).length})</label>
+    `;
+    catList.appendChild(div);
+    div.querySelector("input").addEventListener("change", e => {
+      if (e.target.checked) state.filters.categories.add(c);
+      else state.filters.categories.delete(c);
+      persist();
+      applyFilters();
+    });
+  });
+
+  function setAllCats(checked) {
+    cats.forEach(c => {
+      const cb = document.getElementById(`cat-${c}`);
+      if (cb) cb.checked = checked;
+      if (checked) state.filters.categories.add(c);
+      else state.filters.categories.delete(c);
+    });
+    // 也連動 OSM POI 圖層三個 checkbox（景點 / 神社 / 寺廟 overlay）
+    for (const id of ["f-poi-attr", "f-poi-shrine", "f-poi-temple"]) {
+      const cb = document.getElementById(id);
+      if (cb && cb.checked !== checked) {
+        cb.checked = checked;
+        cb.dispatchEvent(new Event("change"));
+      }
+    }
+    persist();
+    applyFilters();
+  }
+  document.getElementById("cat-all").addEventListener("click", () => setAllCats(true));
+  document.getElementById("cat-none").addEventListener("click", () => setAllCats(false));
+
+  document.getElementById("f-rating").addEventListener("input", e => {
+    state.filters.minRating = parseFloat(e.target.value);
+    document.getElementById("v-rating").textContent = (+e.target.value).toFixed(1);
+    applyFilters();
+  });
+  document.getElementById("f-reviews").addEventListener("input", e => {
+    state.filters.minReviews = parseInt(e.target.value) || 0;
+    applyFilters();
+  });
+
+  const poiToggles = [
+    ["f-poi-attr", () => attrLayer],
+    ["f-poi-shrine", () => shrineLayer],
+    ["f-poi-temple", () => templeLayer],
+  ];
+  for (const [id, getLayer] of poiToggles) {
+    document.getElementById(id).addEventListener("change", e => {
+      const layer = getLayer();
+      if (e.target.checked) map.addLayer(layer);
+      else map.removeLayer(layer);
+    });
+  }
+  document.getElementById("f-transit").addEventListener("change", e => {
+    if (e.target.checked) map.addLayer(transitLayer);
+    else map.removeLayer(transitLayer);
+  });
+  document.getElementById("f-pref").addEventListener("change", e => {
+    if (e.target.checked) map.addLayer(prefectureLayer);
+    else map.removeLayer(prefectureLayer);
+  });
+
+  const fStatus = document.getElementById("f-status");
+  if (fStatus) {
+    fStatus.value = state.filters.statusFilter || "all";
+    fStatus.addEventListener("change", e => {
+      state.filters.statusFilter = e.target.value;
+      applyFilters();
+    });
+  }
+
+  // 🏆 百名店篩選
+  const fHyaku = document.getElementById("f-hyaku");
+  if (fHyaku) {
+    fHyaku.value = state.filters.hyakumeitenOnly ? "only" : "all";
+    fHyaku.addEventListener("change", e => {
+      state.filters.hyakumeitenOnly = e.target.value === "only";
+      persist();
+      applyFilters();
+    });
+    L.DomEvent.disableClickPropagation(fHyaku.parentElement);
+    L.DomEvent.disableScrollPropagation(fHyaku.parentElement);
+  }
+
+  // 地圖右上：顯示模式 (全部 / 候選 / 各日期)
+  const mapFilterEl = document.getElementById("map-display-filter");
+  if (mapFilterEl) {
+    DAYS.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = d;
+      opt.textContent = `📅 ${d}`;
+      mapFilterEl.appendChild(opt);
+    });
+    mapFilterEl.value = state.filters.displayMode;
+    mapFilterEl.addEventListener("change", e => {
+      state.filters.displayMode = e.target.value;
+      persist();
+      applyFilters();
+      applyHotelVisibility();
+    });
+    const wrap = mapFilterEl.parentElement;
+    L.DomEvent.disableClickPropagation(wrap);
+    L.DomEvent.disableScrollPropagation(wrap);
+  }
+
+  // 地圖右上：車站選單（按路線分組）
+  const stationEl = document.getElementById("map-station-filter");
+  if (stationEl) {
+    const byLine = new Map();
+    for (const s of STATION_LIST) {
+      if (!byLine.has(s.line)) byLine.set(s.line, []);
+      byLine.get(s.line).push(s);
+    }
+    for (const line of STATION_LINE_ORDER) {
+      const list = byLine.get(line);
+      if (!list) continue;
+      list.sort((a, b) => a.order - b.order);
+      const og = document.createElement("optgroup");
+      og.label = line;
+      for (const s of list) {
+        const opt = document.createElement("option");
+        opt.value = s.name;
+        opt.textContent = s.name;
+        og.appendChild(opt);
+      }
+      stationEl.appendChild(og);
+    }
+    stationEl.value = state.selectedStation || "";
+    stationEl.addEventListener("change", e => {
+      state.selectedStation = e.target.value;
+      persist();
+      const station = STATION_LIST.find(s => s.name === state.selectedStation);
+      if (station) map.setView([station.lat, station.lng], 15);
+      renderNearbyList();
+    });
+  }
+
+  // 地圖左上：搜尋框（限地圖目前可見店家）
+  setupMapSearch();
+
+  // 地圖右上：附近店家 toggle 按鈕 + panel
+  setupNearbyPanel();
+
+  function setupNearbyPanel() {
+    const btn = document.getElementById("nearby-toggle");
+    const panel = document.getElementById("nearby-panel");
+    if (!btn || !panel) return;
+    L.DomEvent.disableClickPropagation(btn);
+    L.DomEvent.disableScrollPropagation(btn);
+    L.DomEvent.disableClickPropagation(panel);
+    L.DomEvent.disableScrollPropagation(panel);
+    btn.addEventListener("click", () => {
+      const opening = !panel.classList.contains("open");
+      panel.classList.toggle("open", opening);
+      btn.classList.toggle("active", opening);
+    });
+    panel.querySelector(".nearby-close").addEventListener("click", () => {
+      panel.classList.remove("open");
+      btn.classList.remove("active");
+    });
+  }
+
+  function setupMapSearch() {
+  const wrap = document.querySelector(".map-search");
+  const input = document.getElementById("map-search-input");
+  const results = document.getElementById("map-search-results");
+  if (!wrap || !input || !results) return;
+  L.DomEvent.disableClickPropagation(wrap);
+  L.DomEvent.disableScrollPropagation(wrap);
+
+  function visibleMatches(q) {
+    const ql = q.toLowerCase();
+    const out = [];
+    for (const s of state.rows) {
+      const m = state.markers.get(s.id);
+      if (!m || !markersLayer.hasLayer(m)) continue;  // 只搜地圖上看得到的
+      const name = (s.name || "").toLowerCase();
+      const ja = (s.nameJa || "").toLowerCase();
+      const addr = (s.addr || "").toLowerCase();
+      if (name.includes(ql) || ja.includes(ql) || addr.includes(ql)) {
+        out.push(s);
+      }
+    }
+    out.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    return out.slice(0, 30);
+  }
+
+  function render(q) {
+    if (!q) { results.classList.remove("active"); results.innerHTML = ""; return; }
+    const matches = visibleMatches(q);
+    if (matches.length === 0) {
+      results.innerHTML = `<div class="empty">沒有符合的店家（地圖上）</div>`;
+    } else {
+      results.innerHTML = matches.map(s => `
+        <div class="item" data-id="${escapeHtml(s.id)}">
+          <span class="ico">${CAT_ICONS[s.cat] || "📍"}</span>
+          <span class="name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+          <span class="meta">${s.rating || "-"}★</span>
+        </div>
+      `).join("");
+      results.querySelectorAll(".item").forEach(el => {
+        el.addEventListener("click", () => {
+          const s = getStoreById(el.dataset.id);
+          if (!s) return;
+          map.setView([s.lat, s.lng], 17);
+          updateSelectedInfo(s);
+          input.value = s.name;
+          results.classList.remove("active");
+        });
+      });
+    }
+    results.classList.add("active");
+  }
+
+  let t;
+  input.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(() => render(input.value.trim()), 80);
+  });
+  input.addEventListener("focus", () => {
+    if (input.value.trim()) render(input.value.trim());
+  });
+  document.addEventListener("click", e => {
+    if (!e.target.closest(".map-search")) results.classList.remove("active");
+  });
+  input.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+      input.value = "";
+      results.classList.remove("active");
+      input.blur();
+    }
+  });
+  }
+
+  document.getElementById("btn-reset").addEventListener("click", () => {
+    document.getElementById("f-rating").value = "0";
+    document.getElementById("v-rating").textContent = "0.0";
+    document.getElementById("f-reviews").value = 0;
+    state.filters.minRating = 0;
+    state.filters.minReviews = 0;
+    state.filters.statusFilter = "all";
+    const fs = document.getElementById("f-status");
+    if (fs) fs.value = "all";
+    state.filters.categories = new Set(cats);
+    document.querySelectorAll("#cat-list input").forEach(i => i.checked = true);
+    persist();
+    applyFilters();
+  });
+
+  document.getElementById("btn-clear-all").addEventListener("click", () => {
+    if (!confirm("確定清空所有狀態與行程安排？")) return;
+    state.status = {};
+    DAYS.forEach(d => state.dayPlan[d] = []);
+    persist();
+    state.rows.forEach(refreshMarkerStyle);
+    renderPlanner();
+    renderWantList();
+    applyFilters();
+  });
+
+  // 行動裝置面板開合
+  document.getElementById("toggle-filter").addEventListener("click", () => {
+    document.getElementById("filter").classList.toggle("open");
+    document.getElementById("planner").classList.remove("open");
+  });
+  document.getElementById("toggle-planner").addEventListener("click", () => {
+    document.getElementById("planner").classList.toggle("open");
+    document.getElementById("filter").classList.remove("open");
+  });
+}
+
+// ============================================================
+// 行程規劃面板
+// ============================================================
+function renderPlanner() {
+  const tabs = document.getElementById("day-tabs");
+  tabs.innerHTML = "";
+  DAYS.forEach(d => {
+    const btn = document.createElement("button");
+    const count = state.dayPlan[d].length;
+    btn.style.borderLeftColor = DAY_COLORS[d];
+    btn.className = (d === state.activeDay) ? "active" : "";
+    btn.innerHTML = `${d}<span class="badge">${count}</span>`;
+    btn.addEventListener("click", () => {
+      state.activeDay = d;
+      persist();
+      renderPlanner();
+    });
+    tabs.appendChild(btn);
+  });
+
+  const list = document.getElementById("day-list");
+  list.innerHTML = "";
+  list.dataset.day = state.activeDay;
+
+  // 該日該住的飯店：永遠 pin 在最上面（不可拖拉移除）
+  const dayHotels = getHotelsForDay(state.activeDay);
+  for (const h of dayHotels) {
+    list.appendChild(makeHotelCard(h, state.activeDay));
+  }
+
+  const ids = state.dayPlan[state.activeDay];
+  if (ids.length === 0 && dayHotels.length === 0) {
+    list.innerHTML = `<div style="color:#9ca3af; text-align:center; padding:24px 0; font-size:16px;">
+      將「想去清單」拖到這裡，或點 marker 後按「加入：${state.activeDay}」
+    </div>`;
+  } else {
+    ids.forEach(id => {
+      const s = getStoreById(id);
+      if (!s) return;
+      list.appendChild(makeCard(s, { day: state.activeDay }));
+    });
+  }
+  setupDropZone(list, state.activeDay);
+
+  // 計算當天店家間步行時間總和（直線估算）
+  const summary = document.getElementById("day-summary");
+  if (ids.length < 2) {
+    summary.textContent = ids.length === 1 ? "1 間 ・ 加更多店才有路徑估算" : "";
+  } else {
+    let total = 0;
+    for (let i = 0; i < ids.length - 1; i++) {
+      const a = getStoreById(ids[i]);
+      const b = getStoreById(ids[i+1]);
+      if (a && b) total += walkMinutesBetween(a, b);
+    }
+    summary.innerHTML = `${ids.length} 間 ・ 店家間步行 <b>~${total}</b> 分（直線估算，僅供參考）`;
+  }
+}
+
+function makeHotelCard(h, day) {
+  const card = document.createElement("div");
+  card.className = "store-card hotel-card";
+  card.style.borderLeftColor = "#8E24AA";
+  // 換房日標示
+  const sorted = HOTELS.slice().sort((a, b) => DAYS.indexOf(a.fromDay) - DAYS.indexOf(b.fromDay));
+  const myIdx = sorted.indexOf(h);
+  const isCheckIn = h.fromDay === day;
+  const isCheckOut = myIdx < sorted.length - 1 && sorted[myIdx + 1].fromDay === day;
+  const tag = isCheckIn ? "入住" : isCheckOut ? "退房" : "";
+  card.innerHTML = `
+    <span class="name" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</span>
+    <span class="meta">${tag}</span>
+  `;
+  card.addEventListener("click", () => {
+    map.setView([h.lat, h.lng], 16);
+  });
+  return card;
+}
+
+function makeCard(s, { day = null } = {}) {
+  const card = document.createElement("div");
+  card.className = "store-card";
+  card.dataset.id = s.id;
+  card.dataset.cat = s.cat;
+  card.draggable = true;
+  card.style.borderLeftColor = CAT_COLORS[s.cat] || "#888";
+  card.innerHTML = `
+    <span class="name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</span>
+    <span class="meta">${s.rating || "-"}★ ・ ~${(s.distance || 0).toFixed(1)}km</span>
+    <span class="x" title="移除">✕</span>
+  `;
+  card.addEventListener("click", (e) => {
+    if (e.target.classList.contains("x")) return;
+    map.setView([s.lat, s.lng], 16);
+    updateSelectedInfo(s);
+  });
+  card.querySelector(".x").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (day) removeFromDay(s.id);
+    else { delete state.status[s.id]; persist(); renderWantList(); refreshMarkerStyle(s); applyFilters(); }
+  });
+  card.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", s.id);
+    e.dataTransfer.effectAllowed = "move";
+    card.classList.add("ghost-drag");
+  });
+  card.addEventListener("dragend", () => card.classList.remove("ghost-drag"));
+  return card;
+}
+
+function setupDropZone(el, day) {
+  el.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    el.classList.add("over");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("over"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("over");
+    const id = e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    assignDay(id, day);
+  });
+}
+
+function renderWantList() {
+  const wrap = document.getElementById("want-list");
+  wrap.innerHTML = "";
+  const planned = new Set();
+  DAYS.forEach(d => state.dayPlan[d].forEach(id => planned.add(id)));
+  const wantIds = Object.keys(state.status).filter(id =>
+    state.status[id] === "want" && !planned.has(id)
+  );
+  if (wantIds.length === 0) {
+    wrap.innerHTML = `<div style="color:#9ca3af; font-size:16px; padding:8px 0;">點地圖 marker 上的「⭐ 想去」加進這裡</div>`;
+    return;
+  }
+  wantIds.forEach(id => {
+    const s = getStoreById(id);
+    if (s) wrap.appendChild(makeCard(s));
+  });
+}
+
+// ============================================================
+// 操作（提供給 popup 內 onclick）
+// ============================================================
+// 共通：store 狀態 / 行程變動後同步所有 UI
+function syncStoreUI(s, { rebuildPlanner = false } = {}) {
+  persist();
+  refreshMarkerStyle(s);
+  if (rebuildPlanner) renderPlanner();
+  renderWantList();
+  applyFilters();
+  refreshSelectedInfo();
+}
+
+function toggleStatus(id, target) {
+  const s = getStoreById(id); if (!s) return;
+  const wasActive = state.status[id] === target;
+  if (wasActive) delete state.status[id];
+  else state.status[id] = target;
+  syncStoreUI(s);
+  if (!wasActive) jumpToNearestStore(id);
+}
+
+function assignDay(id, day) {
+  const s = getStoreById(id); if (!s) return;
+  for (const d of DAYS) state.dayPlan[d] = state.dayPlan[d].filter(x => x !== id);
+  state.dayPlan[day].push(id);
+  if (state.status[id] === "want") delete state.status[id];  // 排入後不再算想去
+  state.activeDay = day;
+  syncStoreUI(s, { rebuildPlanner: true });
+  jumpToNearestStore(id);
+}
+
+function removeFromDay(id) {
+  const s = getStoreById(id); if (!s) return;
+  for (const d of DAYS) state.dayPlan[d] = state.dayPlan[d].filter(x => x !== id);
+  syncStoreUI(s, { rebuildPlanner: true });
+}
+
+// 退回候選池：移出所有日期，但保留在「想去」清單
+function markCandidate(id) {
+  const s = getStoreById(id); if (!s) return;
+  for (const d of DAYS) state.dayPlan[d] = state.dayPlan[d].filter(x => x !== id);
+  state.status[id] = "want";
+  syncStoreUI(s, { rebuildPlanner: true });
+  jumpToNearestStore(id);
+}
+
+// 跳到目前可見店家中，距離已選車站最近且不是 excludeId 的那家
+function jumpToNearestStore(excludeId) {
+  if (!state.selectedStation) return;
+  const station = STATION_LIST.find(s => s.name === state.selectedStation);
+  if (!station) return;
+  let best = null, bestD = Infinity;
+  for (const s of state.rows) {
+    if (s.id === excludeId) continue;
+    const m = state.markers.get(s.id);
+    if (!m || !markersLayer.hasLayer(m)) continue;  // 只考慮目前可見 marker
+    const d = haversineKm({lat: station.lat, lng: station.lng},
+                          {lat: s.lat, lng: s.lng});
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  if (best) {
+    map.setView([best.lat, best.lng], 16);
+    updateSelectedInfo(best);
+  }
+}
+
+function toggleHours(el) {
+  el.classList.toggle("expanded");
+  const list = el.parentElement.querySelector(".hours-list");
+  if (list) list.classList.toggle("expanded");
+}
+
+window.UI = { toggleStatus, assignDay, removeFromDay, markCandidate, toggleHours };
+
+// ============================================================
+// 啟動
+// ============================================================
+async function main() {
+  initMap();
+  loadPersisted();
+
+  let csvText;
+  if (typeof window.__CSV_DATA === "string") {
+    csvText = window.__CSV_DATA;
+  } else {
+    try {
+      const res = await fetch(CSV_FILE, { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      csvText = await res.text();
+    } catch (e) {
+      alert(`讀不到資料：${e.message}\n\n` +
+            `請確認：\n` +
+            `1. 已執行 collect.py 並產出 all_restaurants.csv 與 data.js\n` +
+            `2. 此 HTML、data.js、CSV 都在同一個資料夾`);
+      return;
+    }
+  }
+
+  state.rows = csvToObjects(parseCSV(csvText));
+  // 載入景點（神社 / 寺廟 / 觀光景點），併入 state.rows
+  if (typeof window.__ATTRACTIONS_DATA === "string" && window.__ATTRACTIONS_DATA) {
+    const attrRows = csvToObjects(parseCSV(window.__ATTRACTIONS_DATA));
+    state.rows.push(...attrRows);
+    console.log(`+${attrRows.length} 筆景點`);
+  }
+  // 載入購物（職人專門 / 選物生活 / 文具 / 百貨 / 超市），併入 state.rows
+  if (typeof window.__SHOPPING_DATA === "string" && window.__SHOPPING_DATA) {
+    const shopRows = csvToObjects(parseCSV(window.__SHOPPING_DATA));
+    state.rows.push(...shopRows);
+    console.log(`+${shopRows.length} 筆購物`);
+  }
+  // 載入 KIX 機場周邊（拉麵 / 甜點 / 6 子類別購物，最後一天用）
+  // 強制 region = "大阪 KIX"，不走 regionOf（regionOf 只認京都府市町）
+  if (typeof window.__KIX_DATA === "string" && window.__KIX_DATA) {
+    const kixRows = csvToObjects(parseCSV(window.__KIX_DATA), "大阪 KIX");
+    state.rows.push(...kixRows);
+    console.log(`+${kixRows.length} 筆 KIX 周邊`);
+  }
+  if (state.rows.length === 0) {
+    alert("CSV 沒有任何資料列。請先執行 collect.py。");
+    return;
+  }
+
+  // 確認 activeRegion 在 state.rows 中真有資料；無則退到「全部」
+  const regionCounts = {};
+  state.rows.forEach(s => { regionCounts[s.region] = (regionCounts[s.region] || 0) + 1; });
+  if (state.activeRegion !== "全部" && !regionCounts[state.activeRegion]) {
+    state.activeRegion = "全部";
+  }
+  renderRegionTabs();
+  buildMarkers();
+  setupFilterUI();
+  renderPlanner();
+  renderWantList();
+  applyFilters();
+  applyHotelVisibility();
+  loadPOIs();          // 非同步抓 Overpass，不擋主流程
+  loadPrefectures();   // 非同步抓府界，不擋主流程
+
+  // 初始視野
+  if (state.activeRegion === "全部") {
+    map.fitBounds(DEFAULT_BOUNDS, { padding: [20, 20] });
+  } else {
+    const inRegion = state.rows.filter(s => s.region === state.activeRegion);
+    if (inRegion.length > 0) {
+      const bounds = L.latLngBounds(inRegion.map(s => [s.lat, s.lng]));
+      map.fitBounds(bounds, { padding: [40, 40] });
+    }
+  }
+}
+
+main();
+</script>
+</body>
+</html>
