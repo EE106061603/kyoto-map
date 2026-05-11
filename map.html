@@ -1863,29 +1863,15 @@ function updateMyListCount() {
 // ============================================================
 // 篩選 UI
 // ============================================================
-// 神社 / 寺廟 / 觀光景點在 UI 上合併成單一「景點」群組（內部仍是三個 cat）
-const ATTRACTION_CATS = ["神社", "寺廟", "觀光景點"];
-const ATTRACTION_LABEL = "景點";
-const ATTRACTION_ICON = "🗾";
-
-// 把 internal cats 攤平成 UI groups: [{key, label, icon, members:[cat,...]}]
+// 類別 UI groups：每個 internal cat 一個 group（保留三個景點 checkbox 各自顯示）
 function buildCategoryGroups() {
   const internal = [...new Set(state.rows.map(r => r.cat))];
-  const groups = [];
-  for (const c of internal) {
-    if (ATTRACTION_CATS.includes(c)) continue;
-    groups.push({ key: `cat-${c}`, label: c, icon: CAT_ICONS[c] || "•", members: [c] });
-  }
-  const attrMembers = ATTRACTION_CATS.filter(c => internal.includes(c));
-  if (attrMembers.length) {
-    groups.push({
-      key: "cat-group-attractions",
-      label: ATTRACTION_LABEL,
-      icon: ATTRACTION_ICON,
-      members: attrMembers,
-    });
-  }
-  return groups;
+  return internal.map(c => ({
+    key: `cat-${c}`,
+    label: c,
+    icon: CAT_ICONS[c] || "•",
+    members: [c],
+  }));
 }
 
 // 群組在當前區域的店家數（全部 → 總計，其他 → 該區計數）
