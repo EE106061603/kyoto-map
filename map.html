@@ -1693,6 +1693,7 @@ function changeRegion(r) {
   buildMarkers();
   applyFilters();
   renderRegionTabs();
+  refreshCategoryCounts();
   // 「全部」用預設視野（京阪宇治+KIX）；單區則自動縮放到該區
   if (state.activeRegion === "全部") {
     map.fitBounds(DEFAULT_BOUNDS, { padding: [20, 20] });
@@ -1862,8 +1863,28 @@ function updateMyListCount() {
 // ============================================================
 // 篩選 UI
 // ============================================================
+// 類別在當前區域的店家數（全部 → 總計，其他 → 該區計數）
+function categoryCount(c) {
+  if (state.activeRegion === "全部") {
+    return state.rows.filter(r => r.cat === c).length;
+  }
+  return state.rows.filter(r => r.cat === c && r.region === state.activeRegion).length;
+}
+
+// 區域切換後只更新 label 的數字，不重 build checkbox（保留勾選狀態）
+function refreshCategoryCounts() {
+  document.querySelectorAll("#cat-list .row").forEach(row => {
+    const input = row.querySelector("input[type=checkbox]");
+    const label = row.querySelector("label");
+    if (!input || !label) return;
+    const c = input.id.slice(4);
+    const ico = CAT_ICONS[c] || "•";
+    label.innerHTML = `<span class="cat-ico">${ico}</span>${escapeHtml(c)} (${categoryCount(c)})`;
+  });
+}
+
 function setupFilterUI() {
-  // 類別 checkbox：若 localStorage 沒存則預設全勾，反之套用上次狀態
+  // 類別 checkbox：若 localStorage 沒存則預設全勾,反之套用上次狀態
   const cats = [...new Set(state.rows.map(r => r.cat))];
   if (!state._categoriesLoaded) {
     cats.forEach(c => state.filters.categories.add(c));
@@ -1880,7 +1901,7 @@ function setupFilterUI() {
     const checked = state.filters.categories.has(c) ? "checked" : "";
     div.innerHTML = `
       <input type="checkbox" id="${id}" ${checked}>
-      <label for="${id}"><span class="cat-ico">${ico}</span>${escapeHtml(c)} (${state.rows.filter(r=>r.cat===c).length})</label>
+      <label for="${id}"><span class="cat-ico">${ico}</span>${escapeHtml(c)} (${categoryCount(c)})</label>
     `;
     catList.appendChild(div);
     div.querySelector("input").addEventListener("change", e => {
